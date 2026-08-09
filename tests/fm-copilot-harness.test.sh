@@ -12,7 +12,7 @@ test_live_process_shape_detects_copilot() {
   local fakebin out pid
   fakebin=$(fm_fakebin "$TMP_ROOT/detect")
   ln -s /bin/bash "$fakebin/copilot"
-  out=$("$fakebin/copilot" -c "\"$ROOT/bin/fm-harness.sh\"")
+  out=$("$fakebin/copilot" -c "\"$ROOT/bin/fm-harness.sh\"; :")
   [ "$out" = copilot ] || fail "copilot argv[0] process shape detected as '$out'"
   pid=$("$fakebin/copilot" -c ". \"$ROOT/bin/fm-session-lock-lib.sh\"; fm_harness_ancestry_pid")
   case "$pid" in ''|*[!0-9]*) fail "copilot lock ancestry returned '$pid'" ;; esac

@@ -300,7 +300,8 @@ DOCTOR_BIN="$TMP_ROOT/doctor-bin"
 DOCTOR_HOME="$TMP_ROOT/doctor-home"
 mkdir -p "$DOCTOR_BIN" "$DOCTOR_HOME"
 ln -sf "$(command -v bash)" "$DOCTOR_BIN/bash"
-ln -sf "$(command -v jq)" "$DOCTOR_BIN/jq"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$DOCTOR_BIN/jq"
+chmod +x "$DOCTOR_BIN/jq"
 # Report a non-darwin host so this file keeps testing tool resolution alone and
 # never reads or writes the real account's launch agents.
 cat > "$DOCTOR_BIN/uname" <<'SH'
@@ -322,7 +323,6 @@ ln -sf "$(command -v git)" "$DOCTOR_BIN/git"
 # The direct doctor fixture needs the complete required tool set. These stubs
 # exercise resolution only; the dedicated doctor suite owns worker and Herdr
 # lifecycle behavior against controlled launchctl fixtures.
-printf '#!/usr/bin/env bash\nexit 0\n' > "$DOCTOR_BIN/jq"
 printf '#!/usr/bin/env bash\nprintf "{\\\"server\\\":{\\\"running\\\":false}}\\n"\n' > "$DOCTOR_BIN/herdr"
 cat > "$DOCTOR_BIN/tasks-axi" <<'SH'
 #!/usr/bin/env bash
