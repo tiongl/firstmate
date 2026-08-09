@@ -59,13 +59,15 @@ fm_backend_zellij_version_check || fail "version_check failed against the real i
 pass "real zellij: version_check accepts the installed binary's version"
 
 fm_backend_zellij_container_ensure > "$CONTAINER_OUTPUT" || fail "container_ensure failed"
-IFS= read -r CONTAINER < "$CONTAINER_OUTPUT" || fail "container_ensure returned no session name"
+CONTAINER=$(<"$CONTAINER_OUTPUT")
+[ -n "$CONTAINER" ] || fail "container_ensure returned no session name"
 [ "$CONTAINER" = "$SESSION" ] || fail "container_ensure should echo the isolated session name, got '$CONTAINER'"
 pass "real zellij: container_ensure starts the isolated background session ($CONTAINER)"
 
 # A second container_ensure must reuse the same session (idempotent, no error).
 fm_backend_zellij_container_ensure > "$CONTAINER_OUTPUT" || fail "second container_ensure failed"
-IFS= read -r CONTAINER2 < "$CONTAINER_OUTPUT" || fail "second container_ensure returned no session name"
+CONTAINER2=$(<"$CONTAINER_OUTPUT")
+[ -n "$CONTAINER2" ] || fail "second container_ensure returned no session name"
 [ "$CONTAINER2" = "$CONTAINER" ] || fail "container_ensure is not idempotent: '$CONTAINER' vs '$CONTAINER2'"
 pass "real zellij: container_ensure is idempotent (reuses the existing session)"
 
