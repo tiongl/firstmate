@@ -483,6 +483,22 @@ test_create_task_creates_and_parses_ids() {
   pass "fm_backend_zellij_create_task: creates a home-scoped tab and parses tab_id/pane_id from the response"
 }
 
+test_create_task_resolves_silent_new_tab() {
+  local dir fb out title
+  dir="$TMP_ROOT/create-task-silent"; mkdir -p "$dir/responses"
+  title=$(zellij_expected_scoped_title fm-silent)
+  printf '[]\n' > "$dir/responses/1.out"
+  # Native Windows Zellij creates the tab but emits no id from new-tab.
+  printf '[{"tab_id":6,"name":"%s","active":true}]\n' "$title" > "$dir/responses/3.out"
+  printf '[{"id":12,"tab_id":6,"is_plugin":false}]\n' > "$dir/responses/4.out"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate fm-silent /tmp/proj' "$ROOT" )
+  [ "$out" = "6 12" ] || fail "create_task should resolve a silently created tab by its unique title, got '$out'"
+  pass "fm_backend_zellij_create_task: resolves a silent native-Windows new-tab from live state"
+}
+
 test_create_task_restores_previously_active_tab() {
   local dir fb out
   dir="$TMP_ROOT/focus-restore"; mkdir -p "$dir/responses"
@@ -1090,6 +1106,7 @@ test_dispatch_routes_zellij_backend
 test_dispatch_busy_state_unknown_for_zellij
 test_create_task_refuses_duplicate_label
 test_create_task_creates_and_parses_ids
+test_create_task_resolves_silent_new_tab
 test_create_task_restores_previously_active_tab
 test_create_task_no_restore_when_new_tab_was_already_active
 test_capture_small_reads_use_viewport_and_trim
