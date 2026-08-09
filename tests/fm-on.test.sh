@@ -300,6 +300,7 @@ DOCTOR_BIN="$TMP_ROOT/doctor-bin"
 DOCTOR_HOME="$TMP_ROOT/doctor-home"
 mkdir -p "$DOCTOR_BIN" "$DOCTOR_HOME"
 ln -sf "$(command -v bash)" "$DOCTOR_BIN/bash"
+ln -sf "$(command -v jq)" "$DOCTOR_BIN/jq"
 # Report a non-darwin host so this file keeps testing tool resolution alone and
 # never reads or writes the real account's launch agents.
 cat > "$DOCTOR_BIN/uname" <<'SH'
