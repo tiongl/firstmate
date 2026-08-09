@@ -80,7 +80,8 @@ cat >/dev/null
 printf 'FIRSTMATE COPILOT START\nsecond line\n'
 SH
   chmod +x "$dir/bin/fm-sessionstart-run.sh"
-  out=$(printf '{"source":"startup"}' | "$dir/bin/fm-copilot-hook.sh" session-start)
+  out=$(printf '{"source":"startup"}' \
+    | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" session-start)
   value=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["additionalContext"])')
   assert_contains "$value" "FIRSTMATE COPILOT START" "session-start digest was not injected"
   assert_contains "$value" "second line" "session-start multiline context was truncated"
@@ -98,7 +99,7 @@ exit 2
 SH
   chmod +x "$dir/bin/fm-turnend-guard.sh"
   out=$(printf '{"sessionId":"copilot-test","stop_hook_active":false}' \
-    | "$dir/bin/fm-copilot-hook.sh" agent-stop)
+    | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" agent-stop)
   decision=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision"])')
   reason=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')
   [ "$decision" = block ] || fail "agentStop decision was '$decision', expected block"
@@ -120,7 +121,7 @@ exit 2
 SH
   chmod +x "$dir/bin/fm-arm-pretool-check.sh"
   out=$(printf '{"toolName":"bash","toolArgs":{"command":"bin/fm-watch-arm.sh &"}}' \
-    | "$dir/bin/fm-copilot-hook.sh" pre-arm 2>&1) || status=$?
+    | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" pre-arm 2>&1) || status=$?
   expect_code 2 "$status" "Copilot preToolUse denial"
   assert_contains "$out" "denied by shared policy" "preToolUse lost the shared policy denial"
   pass "copilot preToolUse forwards native tool arguments to the shared command policy"
