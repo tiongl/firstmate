@@ -83,10 +83,11 @@ test_local_primary_denies_task_tool() {
 }
 
 test_malformed_payloads_stay_inert() {
-  local dir mode out status
+  local dir mode out payload status
   dir="$TMP_ROOT/malformed"
   make_hook_fixture "$dir"
-  for mode in fm-turnend-guard fm-arm-pretool-check fm-cd-pretool-check fm-subagent-pretool-check; do
+  for mode in fm-sessionstart-run fm-turnend-guard fm-arm-pretool-check \
+              fm-cd-pretool-check fm-subagent-pretool-check; do
     cat > "$dir/bin/$mode.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'shared hook reached\n'
@@ -101,7 +102,26 @@ SH
     expect_code 0 "$status" "malformed Copilot $mode payload"
     [ -z "$out" ] || fail "malformed Copilot $mode payload reached shared behavior: $out"
   done
-  pass "malformed Copilot payloads stay inert"
+
+  while IFS='|' read -r mode payload; do
+    status=0
+    out=$(printf '%s' "$payload" | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
+    expect_code 0 "$status" "invalid Copilot $mode payload"
+    [ -z "$out" ] || fail "invalid Copilot $mode payload reached shared behavior: $out"
+  done <<'EOF'
+session-start|[]
+agent-stop|[]
+pre-arm|[]
+pre-cd|[]
+pre-subagent|[]
+agent-stop|{"stop_hook_active":{}}
+agent-stop|{"stop_hook_active":false,"sessionId":{}}
+agent-stop|{"stop_hook_active":false,"session_id":[]}
+pre-arm|{"toolArgs":{"command":{}}}
+pre-cd|{"toolArgs":{"command":[]}}
+pre-subagent|{"toolName":{"name":"task"}}
+EOF
+  pass "malformed and mistyped Copilot payloads stay inert"
 }
 
 test_session_start_becomes_additional_context_without_python() {

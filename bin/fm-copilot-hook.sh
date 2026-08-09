@@ -19,6 +19,22 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=${1:-}
 
+json_object_payload() {  # <payload>
+  local payload=$1
+  command -v node >/dev/null 2>&1 || return 1
+  node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      const data = JSON.parse(input);
+      if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        process.exit(1);
+      }
+    });
+  ' 2>/dev/null <<<"$payload"
+}
+
 json_field() {  # <payload> <field>
   local payload=$1 field=$2
   command -v node >/dev/null 2>&1 || return 1
@@ -28,26 +44,43 @@ json_field() {  # <payload> <field>
     process.stdin.on("data", chunk => input += chunk);
     process.stdin.on("end", () => {
       const data = JSON.parse(input);
-      const object = value =>
-        value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+      if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        process.exit(1);
+      }
       let value;
       switch (process.env.FIELD) {
         case "stop-active":
           value = data.stop_hook_active ?? false;
+          if (typeof value !== "boolean") process.exit(1);
           break;
         case "session-id":
-          value = data.sessionId ?? data.session_id ?? "unknown";
+          if (data.sessionId !== undefined) {
+            value = data.sessionId;
+          } else if (data.session_id !== undefined) {
+            value = data.session_id;
+          } else {
+            value = "unknown";
+          }
+          if (typeof value !== "string") process.exit(1);
           break;
         case "command":
-          value = object(data.toolArgs).command ?? "";
+          if (data.toolArgs === undefined) {
+            value = "";
+          } else {
+            if (data.toolArgs === null || typeof data.toolArgs !== "object" ||
+                Array.isArray(data.toolArgs)) process.exit(1);
+            value = data.toolArgs.command ?? "";
+          }
+          if (typeof value !== "string") process.exit(1);
           break;
         case "tool":
           value = data.toolName ?? "";
+          if (typeof value !== "string") process.exit(1);
           break;
         default:
           process.exit(1);
       }
-      process.stdout.write(typeof value === "string" ? value : JSON.stringify(value));
+      process.stdout.write(String(value));
     });
   ' 2>/dev/null <<<"$payload"
 }
@@ -70,6 +103,7 @@ case "$MODE" in
   session-start)
     PAYLOAD=$(cat 2>/dev/null || true)
     [ -n "$PAYLOAD" ] || exit 0
+    json_object_payload "$PAYLOAD" || exit 0
     DIGEST=$(printf '%s' "$PAYLOAD" | "$SCRIPT_DIR/fm-sessionstart-run.sh" 2>/dev/null || true)
     [ -n "$DIGEST" ] || exit 0
     json_object additionalContext "$DIGEST" || exit 0
