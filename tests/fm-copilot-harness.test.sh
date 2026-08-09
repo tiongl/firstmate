@@ -26,6 +26,50 @@ make_hook_fixture() {
   chmod +x "$dir/bin/fm-copilot-hook.sh"
 }
 
+test_github_actions_leaves_repository_hooks_inert() {
+  local dir mode out status
+  dir="$TMP_ROOT/github-actions"
+  make_hook_fixture "$dir"
+  for mode in fm-sessionstart-run fm-turnend-guard fm-arm-pretool-check \
+              fm-cd-pretool-check fm-subagent-pretool-check; do
+    cat > "$dir/bin/$mode.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'repository hook ran in GitHub Actions\n'
+exit 2
+SH
+    chmod +x "$dir/bin/$mode.sh"
+  done
+
+  for mode in session-start agent-stop pre-arm pre-cd pre-subagent; do
+    status=0
+    out=$(printf '{"sessionId":"cloud","stop_hook_active":false,"toolName":"task","toolArgs":{"command":"bin/fm-watch-arm.sh &"}}' \
+      | GITHUB_ACTIONS=true "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
+    expect_code 0 "$status" "GitHub Actions $mode hook"
+    [ -z "$out" ] || fail "GitHub Actions $mode hook was not inert: $out"
+  done
+  pass "Copilot repository hooks stay inert and allow task in GitHub Actions"
+}
+
+test_local_primary_denies_task_tool() {
+  local dir out status=0
+  dir="$TMP_ROOT/local-primary"
+  make_hook_fixture "$dir"
+  cp "$ROOT/bin/fm-subagent-pretool-check.sh" "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/"
+  chmod +x "$dir/bin/fm-subagent-pretool-check.sh"
+  mkdir -p "$dir/state"
+  printf '# fixture\n' > "$dir/AGENTS.md"
+  git -C "$dir" init -q
+
+  out=$(printf '{"toolName":"task"}' \
+    | env GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+      "$dir/bin/fm-copilot-hook.sh" pre-subagent 2>&1) || status=$?
+  expect_code 2 "$status" "local Copilot primary task denial"
+  printf '%s' "$out" | python3 -c \
+    'import json,sys; d=json.load(sys.stdin); assert d["hookSpecificOutput"]["permissionDecision"] == "deny"; assert "blocked tool: task" in d["systemMessage"]' \
+    || fail "local Copilot primary task denial lost its native decision: $out"
+  pass "local Copilot primary sessions still deny the task tool"
+}
+
 test_session_start_becomes_additional_context() {
   local dir out value
   dir="$TMP_ROOT/session-start"
@@ -83,6 +127,8 @@ SH
 }
 
 test_live_process_shape_detects_copilot
+test_github_actions_leaves_repository_hooks_inert
+test_local_primary_denies_task_tool
 test_session_start_becomes_additional_context
 test_agent_stop_translates_block_decision
 test_pretool_payload_reaches_shared_policy

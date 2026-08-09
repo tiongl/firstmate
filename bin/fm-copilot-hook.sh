@@ -14,6 +14,8 @@
 # except a shared policy script's explicit denial, which preserves its exit 2.
 set -u
 
+[ "${GITHUB_ACTIONS:-}" = true ] && exit 0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=${1:-}
 
