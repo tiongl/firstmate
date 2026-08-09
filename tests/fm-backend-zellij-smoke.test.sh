@@ -22,6 +22,10 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 command -v zellij >/dev/null 2>&1 || { echo "skip: zellij not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the zellij adapter)"; exit 0; }
+if [ -n "${FM_ZELLIJ_CHILD_BASH_ENV:-}" ]; then
+  [ -f "$FM_ZELLIJ_CHILD_BASH_ENV" ] || { echo "not ok - child Bash bootstrap not found: $FM_ZELLIJ_CHILD_BASH_ENV" >&2; exit 1; }
+  export BASH_ENV=$FM_ZELLIJ_CHILD_BASH_ENV
+fi
 
 # shellcheck source=tests/zellij-test-safety.sh
 . "$ROOT/tests/zellij-test-safety.sh"

@@ -312,9 +312,13 @@ jobs:
         run: |
           set -eu
           config_dir="$(cygpath -u "$RUNNER_TEMP")/zellij-config"
+          shell_path=$(cygpath -w "$SHELL")
+          shell_kdl=${shell_path//\\/\\\\}
           mkdir -p "$config_dir"
-          printf 'default_shell "C:/Program Files/Git/bin/bash.exe"\n' > "$config_dir/config.kdl"
+          printf 'default_shell "%s"\n' "$shell_kdl" > "$config_dir/config.kdl"
+          printf 'unset BASH_ENV\nexec "$SHELL" --noprofile --norc -i\n' > "$config_dir/interactive-bash"
           printf 'ZELLIJ_CONFIG_DIR=%s\n' "$(cygpath -w "$config_dir")" >> "$GITHUB_ENV"
+          printf 'FM_ZELLIJ_CHILD_BASH_ENV=%s\n' "$config_dir/interactive-bash" >> "$GITHUB_ENV"
           printf 'SHELL=C:/Program Files/Git/bin/bash.exe\n' >> "$GITHUB_ENV"
       - name: Run native-Windows Zellij smoke test
         run: |
