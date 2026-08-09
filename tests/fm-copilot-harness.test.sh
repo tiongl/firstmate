@@ -74,10 +74,10 @@ test_local_primary_denies_task_tool() {
 
   out=$(printf '{"toolName":"task"}' \
     | env GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
-      "$dir/bin/fm-copilot-hook.sh" pre-subagent 2>&1) || status=$?
+      "$dir/bin/fm-copilot-hook.sh" pre-subagent) || status=$?
   expect_code 2 "$status" "local Copilot primary task denial"
   printf '%s' "$out" | node -e \
-    'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => { const d=JSON.parse(s); if (d.hookSpecificOutput.permissionDecision !== "deny" || !d.systemMessage.includes("blocked tool: task")) process.exit(1); });' \
+    'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => { const d=JSON.parse(s); if (d.permissionDecision !== "deny" || !d.permissionDecisionReason.includes("blocked tool: task")) process.exit(1); });' \
     || fail "local Copilot primary task denial lost its native decision: $out"
   pass "local Copilot primary sessions still deny the task tool"
 }
@@ -168,8 +168,8 @@ SH
   pass "copilot agentStop converts the shared exit-2 guard without python3"
 }
 
-test_pretool_payload_reaches_shared_policy_without_python() {
-  local dir node_path out status=0
+test_pretool_denials_use_native_output_without_python() {
+  local dir node_path mode payload out_file err_file out status
   dir="$TMP_ROOT/pretool"
   node_path="$dir/node-only-bin"
   make_hook_fixture "$dir"
@@ -179,15 +179,47 @@ test_pretool_payload_reaches_shared_policy_without_python() {
 [ "$1" = --command ] || exit 9
 [ "$2" = 'bin/fm-watch-arm.sh &' ] || exit 8
 [ "$3" = --claude ] || exit 7
-printf 'denied by shared policy\n' >&2
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"arm denied by shared policy"}\n' >&2
 exit 2
 SH
-  chmod +x "$dir/bin/fm-arm-pretool-check.sh"
-  out=$(printf '{"toolName":"bash","toolArgs":{"command":"bin/fm-watch-arm.sh &"}}' \
-    | PATH="$node_path" GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" pre-arm 2>&1) || status=$?
-  expect_code 2 "$status" "Copilot preToolUse denial"
-  assert_contains "$out" "denied by shared policy" "preToolUse lost the shared policy denial"
-  pass "copilot preToolUse reaches the shared command policy without python3"
+  cat > "$dir/bin/fm-cd-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = --command ] || exit 9
+[ "$2" = 'cd projects/demo' ] || exit 8
+[ "$3" = --claude ] || exit 7
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"cd denied by shared policy"}\n' >&2
+exit 2
+SH
+  cat > "$dir/bin/fm-subagent-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = --tool ] || exit 9
+[ "$2" = task ] || exit 8
+[ "$3" = --claude ] || exit 7
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},"systemMessage":"subagent denied by shared policy"}\n' >&2
+exit 2
+SH
+  chmod +x "$dir/bin/fm-arm-pretool-check.sh" "$dir/bin/fm-cd-pretool-check.sh" \
+    "$dir/bin/fm-subagent-pretool-check.sh"
+
+  while IFS='|' read -r mode payload; do
+    out_file="$dir/$mode.out"
+    err_file="$dir/$mode.err"
+    status=0
+    printf '%s' "$payload" \
+      | PATH="$node_path" GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" "$mode" \
+        >"$out_file" 2>"$err_file" || status=$?
+    expect_code 2 "$status" "Copilot $mode denial"
+    [ ! -s "$err_file" ] || fail "Copilot $mode denial leaked non-native stderr: $(cat "$err_file")"
+    out=$(cat "$out_file")
+    printf '%s' "$out" | node -e \
+      'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => { const d=JSON.parse(s); if (d.permissionDecision !== "deny" || !d.permissionDecisionReason.includes("denied by shared policy")) process.exit(1); });' \
+      || fail "Copilot $mode denial lost its native decision: $out"
+  done <<'EOF'
+pre-arm|{"toolName":"bash","toolArgs":{"command":"bin/fm-watch-arm.sh &"}}
+pre-cd|{"toolName":"bash","toolArgs":{"command":"cd projects/demo"}}
+pre-subagent|{"toolName":"task"}
+EOF
+  pass "copilot preToolUse denials use native stdout decisions without python3"
 }
 
 test_live_process_shape_detects_copilot
@@ -196,6 +228,6 @@ test_local_primary_denies_task_tool
 test_malformed_payloads_stay_inert
 test_session_start_becomes_additional_context_without_python
 test_agent_stop_translates_block_decision_without_python
-test_pretool_payload_reaches_shared_policy_without_python
+test_pretool_denials_use_native_output_without_python
 
 echo "# all fm-copilot-harness tests passed"

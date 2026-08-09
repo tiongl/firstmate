@@ -1961,10 +1961,22 @@ EOF
       j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-      cat > "$WT/.github/hooks/fm-busy-state.json" <<EOF
-{"version":1,"hooks":{"userPromptSubmitted":[{"type":"command","bash":"$j_submit"}],"agentStop":[{"type":"command","bash":"$j_stop"}],"sessionEnd":[{"type":"command","bash":"$j_sessionend"}]}}
-EOF
-      exclude_path '.github/hooks/fm-busy-state.json'
+      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\"}]}}"
+      copilot_hook_index=0
+      while :; do
+        copilot_hook_rel=".github/hooks/fm-busy-state-$ID"
+        [ "$copilot_hook_index" -eq 0 ] || copilot_hook_rel="$copilot_hook_rel-$copilot_hook_index"
+        copilot_hook_rel="$copilot_hook_rel.json"
+        if (set -C; printf '%s\n' "$copilot_hook_json" > "$WT/$copilot_hook_rel") 2>/dev/null; then
+          break
+        fi
+        copilot_hook_index=$((copilot_hook_index + 1))
+        if [ "$copilot_hook_index" -gt 100 ]; then
+          echo "error: could not allocate a worker-owned Copilot hook path for $ID" >&2
+          exit 1
+        fi
+      done
+      exclude_path "$copilot_hook_rel"
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"

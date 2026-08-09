@@ -416,10 +416,19 @@ test_codex_omits_invalid_max_effort() {
 }
 
 test_copilot_threads_model_effort_and_worker_hook() {
-  local rec id out status launch hook
+  local rec id out status launch hook canonical occupied
   id=profile-copilot-z4b
   rec=$(make_spawn_case profile-copilot copilot "$id")
   read_case_record "$rec"
+  mkdir -p "$WT_DIR/.github/hooks"
+  canonical="$WT_DIR/.github/hooks/fm-busy-state.json"
+  occupied="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  printf '%s\n' '{"version":1,"hooks":{"sessionStart":[]}}' > "$canonical"
+  printf '%s\n' '{"owned":"elsewhere"}' > "$occupied"
+  git -C "$WT_DIR" add .github/hooks/fm-busy-state.json \
+    ".github/hooks/fm-busy-state-$id.json"
+  git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm 'add repository hook fixture'
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --model gpt-5.6-sol --effort xhigh)
@@ -429,12 +438,16 @@ test_copilot_threads_model_effort_and_worker_hook() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "copilot --yolo --autopilot --model 'gpt-5.6-sol' --effort 'xhigh' -i" \
     "copilot launch did not thread autonomy, model, effort, and initial instructions"
-  hook="$WT_DIR/.github/hooks/fm-busy-state.json"
+  [ "$(cat "$canonical")" = '{"version":1,"hooks":{"sessionStart":[]}}' ] \
+    || fail "copilot spawn overwrote the tracked repository hook"
+  [ "$(cat "$occupied")" = '{"owned":"elsewhere"}' ] \
+    || fail "copilot spawn overwrote a pre-existing worker hook path"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id-1.json"
   assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
   python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
   assert_grep "state=busy source=fm-spawn" "$HOME_DIR/state/$id.busy-state" \
     "copilot spawn did not seed semantic busy state"
-  pass "copilot receives profile flags and a semantic worker lifecycle hook"
+  pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
 }
 
 test_grok_threads_model_and_reasoning_effort() {

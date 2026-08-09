@@ -77,6 +77,10 @@ json_field() {  # <payload> <field>
           value = data.toolName ?? "";
           if (typeof value !== "string") process.exit(1);
           break;
+        case "system-message":
+          value = data.systemMessage ?? "";
+          if (typeof value !== "string") process.exit(1);
+          break;
         default:
           process.exit(1);
       }
@@ -97,6 +101,30 @@ json_block_decision() {  # <reason>
   command -v node >/dev/null 2>&1 || return 1
   REASON="$reason" node -e \
     'process.stdout.write(JSON.stringify({decision: "block", reason: process.env.REASON}) + "\n")'
+}
+
+json_pretool_denial() {  # <reason>
+  local reason=$1
+  command -v node >/dev/null 2>&1 || return 1
+  REASON="$reason" node -e \
+    'process.stdout.write(JSON.stringify({permissionDecision: "deny", permissionDecisionReason: process.env.REASON}) + "\n")'
+}
+
+run_pretool_guard() {
+  local reason_file output status reason
+  reason_file=$(mktemp "${TMPDIR:-/tmp}/fm-copilot-pretool.XXXXXX") || return 0
+  if "$@" 2>"$reason_file"; then
+    status=0
+  else
+    status=$?
+  fi
+  output=$(cat "$reason_file" 2>/dev/null || true)
+  rm -f "$reason_file"
+  [ "$status" -eq 2 ] || return 0
+  reason=$(json_field "$output" system-message) || reason=$output
+  [ -n "$reason" ] || reason="Firstmate policy denied this tool call."
+  json_pretool_denial "$reason" || return 0
+  return 2
 }
 
 case "$MODE" in
@@ -137,16 +165,19 @@ case "$MODE" in
     COMMAND=$(json_field "$PAYLOAD" command) || exit 0
     [ -n "$COMMAND" ] || exit 0
     if [ "$MODE" = pre-arm ]; then
-      exec "$SCRIPT_DIR/fm-arm-pretool-check.sh" --command "$COMMAND" --claude
+      run_pretool_guard "$SCRIPT_DIR/fm-arm-pretool-check.sh" --command "$COMMAND" --claude
+      exit $?
     fi
-    exec "$SCRIPT_DIR/fm-cd-pretool-check.sh" --command "$COMMAND" --claude
+    run_pretool_guard "$SCRIPT_DIR/fm-cd-pretool-check.sh" --command "$COMMAND" --claude
+    exit $?
     ;;
   pre-subagent)
     PAYLOAD=$(cat 2>/dev/null || true)
     [ -n "$PAYLOAD" ] || exit 0
     TOOL=$(json_field "$PAYLOAD" tool) || exit 0
     [ -n "$TOOL" ] || exit 0
-    exec "$SCRIPT_DIR/fm-subagent-pretool-check.sh" --tool "$TOOL" --claude
+    run_pretool_guard "$SCRIPT_DIR/fm-subagent-pretool-check.sh" --tool "$TOOL" --claude
+    exit $?
     ;;
   *)
     echo "usage: $(basename "$0") session-start|agent-stop|pre-arm|pre-cd|pre-subagent" >&2
