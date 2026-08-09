@@ -95,6 +95,8 @@ Real test cleanup uses only an isolated non-`firstmate` session and the guard in
 
 - Zellij is experimental and explicit-only.
 - Native Windows is limited to the Git Bash configuration above and the backend smoke path; full Firstmate lifecycle support is not yet claimed.
+- The native Windows discovery lane is non-blocking while upstream Zellij detached-server lifetime support remains unresolved.
+- The lane still runs on every change and uploads its smoke output and Zellij server logs for diagnosis.
 - All homes share one session and tab bar; scoped titles prevent cross-home identity collisions but do not create per-home visual containers.
 - There is no native busy or push-event signal, so supervision uses capture/hash polling for screen changes and each harness adapter's semantic lifecycle for worker state.
   Grok alone retains its isolated rendered-tail fallback.
@@ -113,5 +115,5 @@ bin/fm-install-zellij.sh <destination-directory>
 ```
 
 The real smoke test uses a unique session and guarded deletion.
-CI runs that smoke test against the pinned native Windows Zellij build under Git Bash.
+CI runs that smoke test against the pinned Zellij 0.44.3 native Windows build under Git Bash.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#zellij) records the active CLI matrix and lifecycle evidence.

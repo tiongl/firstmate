@@ -4,12 +4,12 @@
 # Usage:
 #   fm-install-zellij.sh <destination-directory>
 #
-# Pins the no-web Zellij v0.44.0 release exercised by the real backend smoke
+# Pins the no-web Zellij v0.44.3 release exercised by the real backend smoke
 # test. Selects an official release asset for Linux, macOS, or native Windows
 # under Git Bash, verifies its SHA-256, and checks the installed version.
 set -eu
 
-FM_ZELLIJ_CI_VERSION=0.44.0
+FM_ZELLIJ_CI_VERSION=0.44.3
 FM_ZELLIJ_CI_TAG="v${FM_ZELLIJ_CI_VERSION}"
 FM_ZELLIJ_CI_MAX_BYTES=30000000
 FM_ZELLIJ_CI_REPO=zellij-org/zellij
@@ -26,23 +26,23 @@ arch=$(uname -m)
 case "${os}-${arch}" in
   Linux-x86_64)
     ARCHIVE=zellij-no-web-x86_64-unknown-linux-musl.tar.gz
-    SHA256=458b0c5ec19d6313580293e451c9a467c73b337d42faf8e2ce1712c56767b727
+    SHA256=f901129919b0a405ac5f278f53acd7fde5d62401324c509b6233038d5c0ad1f9
     ;;
   Linux-aarch64|Linux-arm64)
     ARCHIVE=zellij-no-web-aarch64-unknown-linux-musl.tar.gz
-    SHA256=434daa1283c1f7054d0077ee224822b9ec822bfc75de9dea5c3ad794bf8bb28d
+    SHA256=9a92b94ba52e2b03f3a071a978d90922693221fa8ed59fd7f4819fe90e431996
     ;;
   Darwin-arm64)
     ARCHIVE=zellij-no-web-aarch64-apple-darwin.tar.gz
-    SHA256=25dff7238d2587542d0267b4a99db11dba91d131285432e35cac8c2a11f6df62
+    SHA256=111e15402c73474003ff62b4577c415af1966891bddfc6e5a89b4f33b353c720
     ;;
   Darwin-x86_64)
     ARCHIVE=zellij-no-web-x86_64-apple-darwin.tar.gz
-    SHA256=510fc73b4c119a8cd74d8ea554bfa30a79d5ede97254c286aeda808ebc661411
+    SHA256=dcc734783a5c1d8d27157e3d8995e4341738535abb901b0a3422218677fbe049
     ;;
   MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64)
     ARCHIVE=zellij-no-web-x86_64-pc-windows-msvc.zip
-    SHA256=fb37f4236bc3476f66a52923a23a6e08211695f2c89cea650baafd266ecb2e0d
+    SHA256=2a192ead623d326458b058f235a5c9ca6f955cece8b3787ce744c07ba9f11e34
     WINDOWS=1
     ;;
   *)

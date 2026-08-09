@@ -22,10 +22,6 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 command -v zellij >/dev/null 2>&1 || { echo "skip: zellij not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the zellij adapter)"; exit 0; }
-if [ -n "${FM_ZELLIJ_CHILD_BASH_ENV:-}" ]; then
-  [ -f "$FM_ZELLIJ_CHILD_BASH_ENV" ] || { echo "not ok - child Bash bootstrap not found: $FM_ZELLIJ_CHILD_BASH_ENV" >&2; exit 1; }
-  export BASH_ENV=$FM_ZELLIJ_CHILD_BASH_ENV
-fi
 
 # shellcheck source=tests/zellij-test-safety.sh
 . "$ROOT/tests/zellij-test-safety.sh"
@@ -36,13 +32,11 @@ trap cleanup_all EXIT
 
 cleanup_all() {
   zellij_safe_delete "$SESSION"
-  [ -z "${CONTAINER_OUTPUT:-}" ] || rm -f -- "$CONTAINER_OUTPUT"
 }
 
 TMP_CWD="${TMPDIR:-/tmp}"
 [ -d "$TMP_CWD" ] || fail "temporary directory does not exist: $TMP_CWD"
 TMP_CWD=$(cd "$TMP_CWD" && pwd -P) || fail "could not resolve temporary directory: $TMP_CWD"
-CONTAINER_OUTPUT="$TMP_CWD/fm-zellij-container-$$"
 printf -v TMP_CWD_Q '%q' "$TMP_CWD"
 LONG_CWD="$TMP_CWD/fm-zellij-wrap-$$/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd"
 mkdir -p "$LONG_CWD" || fail "could not create long cwd fixture: $LONG_CWD"
@@ -58,15 +52,13 @@ fm_backend_source zellij || fail "fm_backend_source zellij failed"
 fm_backend_zellij_version_check || fail "version_check failed against the real installed zellij"
 pass "real zellij: version_check accepts the installed binary's version"
 
-fm_backend_zellij_container_ensure > "$CONTAINER_OUTPUT" || fail "container_ensure failed"
-CONTAINER=$(<"$CONTAINER_OUTPUT")
+CONTAINER=$(fm_backend_zellij_container_ensure) || fail "container_ensure failed"
 [ -n "$CONTAINER" ] || fail "container_ensure returned no session name"
 [ "$CONTAINER" = "$SESSION" ] || fail "container_ensure should echo the isolated session name, got '$CONTAINER'"
 pass "real zellij: container_ensure starts the isolated background session ($CONTAINER)"
 
 # A second container_ensure must reuse the same session (idempotent, no error).
-fm_backend_zellij_container_ensure > "$CONTAINER_OUTPUT" || fail "second container_ensure failed"
-CONTAINER2=$(<"$CONTAINER_OUTPUT")
+CONTAINER2=$(fm_backend_zellij_container_ensure) || fail "second container_ensure failed"
 [ -n "$CONTAINER2" ] || fail "second container_ensure returned no session name"
 [ "$CONTAINER2" = "$CONTAINER" ] || fail "container_ensure is not idempotent: '$CONTAINER' vs '$CONTAINER2'"
 pass "real zellij: container_ensure is idempotent (reuses the existing session)"

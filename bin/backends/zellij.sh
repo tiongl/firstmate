@@ -217,7 +217,8 @@ fm_backend_zellij_cli() {  # <session> <action-subcommand-and-args...>
 # orphan whatever the caller actually meant to reach). Every op below calls
 # this first and fails rather than guessing.
 fm_backend_zellij_session_exists() {  # <session>
-  zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$1"
+  zellij list-sessions --no-formatting 2>/dev/null \
+    | awk -v want="$1" '$1 == want && index($0, "(EXITED") == 0 { found = 1 } END { exit found ? 0 : 1 }'
 }
 
 # fm_backend_zellij_server_ensure: create the named session in the background,
@@ -234,7 +235,14 @@ fm_backend_zellij_server_ensure() {  # <session>
   fm_backend_zellij_session_exists "$session" && return 0
   zellij attach -b "$session" </dev/null >/dev/null 2>&1 || return 1
   for i in $(seq 1 20); do
-    fm_backend_zellij_session_exists "$session" && return 0
+    if fm_backend_zellij_session_exists "$session"; then
+      sleep 1
+      if fm_backend_zellij_session_exists "$session"; then
+        return 0
+      fi
+      echo "error: zellij session '$session' was created but its server exited" >&2
+      return 1
+    fi
     sleep 0.5
   done
   echo "error: zellij session '$session' did not come up within 10s" >&2

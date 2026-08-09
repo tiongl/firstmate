@@ -417,6 +417,19 @@ test_session_exists_false_when_absent() {
   pass "fm_backend_zellij_session_exists: false when the session name is not listed"
 }
 
+test_session_exists_false_when_exited() {
+  local dir fb out status
+  dir="$TMP_ROOT/exists-exited"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='firstmate [Created 1s ago] (EXITED - attach to resurrect)' \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_session_exists firstmate' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "session_exists should report false for an EXITED session"
+  [ -z "$out" ] || fail "session_exists should stay silent for an EXITED session, got '$out'"
+  pass "fm_backend_zellij_session_exists: false when the session is EXITED"
+}
+
 test_server_ensure_skips_attach_when_already_exists() {
   local dir fb
   dir="$TMP_ROOT/server-reuse"; mkdir -p "$dir/responses"
@@ -1101,6 +1114,7 @@ test_resolve_bare_selector_prefers_later_session_scoped_title_over_legacy
 test_resolve_bare_selector_refuses_cross_session_ambiguous_untagged
 test_session_exists_true_when_listed
 test_session_exists_false_when_absent
+test_session_exists_false_when_exited
 test_server_ensure_skips_attach_when_already_exists
 test_dispatch_routes_zellij_backend
 test_dispatch_busy_state_unknown_for_zellij
