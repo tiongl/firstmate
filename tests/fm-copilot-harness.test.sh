@@ -62,6 +62,31 @@ SH
   pass "Copilot repository hooks stay inert and allow task in GitHub Actions"
 }
 
+test_cloud_agent_leaves_repository_hooks_inert() {
+  local dir mode out status
+  dir="$TMP_ROOT/cloud-agent"
+  make_hook_fixture "$dir"
+  for mode in fm-sessionstart-run fm-turnend-guard fm-arm-pretool-check \
+              fm-cd-pretool-check fm-subagent-pretool-check; do
+    cat > "$dir/bin/$mode.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'repository hook ran in Copilot cloud agent\n'
+exit 2
+SH
+    chmod +x "$dir/bin/$mode.sh"
+  done
+
+  for mode in session-start agent-stop pre-arm pre-cd pre-subagent; do
+    status=0
+    out=$(printf '{"sessionId":"cloud","stop_hook_active":false,"toolName":"task","toolArgs":{"command":"bin/fm-watch-arm.sh &"}}' \
+      | GITHUB_ACTIONS='' COPILOT_AGENT_PROMPT='cloud task' \
+        "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
+    expect_code 0 "$status" "Copilot cloud-agent $mode hook"
+    [ -z "$out" ] || fail "Copilot cloud-agent $mode hook was not inert: $out"
+  done
+  pass "Copilot cloud-agent identity bypasses sessionStart, preToolUse, and agentStop guards"
+}
+
 test_local_primary_denies_task_tool() {
   local dir out status=0
   dir="$TMP_ROOT/local-primary"
@@ -73,7 +98,7 @@ test_local_primary_denies_task_tool() {
   git -C "$dir" init -q
 
   out=$(printf '{"toolName":"task"}' \
-    | env GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+    | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
       "$dir/bin/fm-copilot-hook.sh" pre-subagent) || status=$?
   expect_code 2 "$status" "local Copilot primary task denial"
   printf '%s' "$out" | node -e \
@@ -98,14 +123,16 @@ SH
 
   for mode in agent-stop pre-arm pre-cd pre-subagent; do
     status=0
-    out=$(printf '{not-json' | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
+    out=$(printf '{not-json' | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' \
+      "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
     expect_code 0 "$status" "malformed Copilot $mode payload"
     [ -z "$out" ] || fail "malformed Copilot $mode payload reached shared behavior: $out"
   done
 
   while IFS='|' read -r mode payload; do
     status=0
-    out=$(printf '%s' "$payload" | GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
+    out=$(printf '%s' "$payload" | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' \
+      "$dir/bin/fm-copilot-hook.sh" "$mode" 2>&1) || status=$?
     expect_code 0 "$status" "invalid Copilot $mode payload"
     [ -z "$out" ] || fail "invalid Copilot $mode payload reached shared behavior: $out"
   done <<'EOF'
@@ -137,7 +164,8 @@ printf 'FIRSTMATE COPILOT START\nsecond line\n'
 SH
   chmod +x "$dir/bin/fm-sessionstart-run.sh"
   out=$(printf '{"source":"startup"}' \
-    | PATH="$node_path" GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" session-start)
+    | env -u COPILOT_AGENT_PROMPT PATH="$node_path" GITHUB_ACTIONS='' \
+      "$dir/bin/fm-copilot-hook.sh" session-start)
   value=$(printf '%s' "$out" | node -e \
     'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(s).additionalContext));')
   assert_contains "$value" "FIRSTMATE COPILOT START" "session-start digest was not injected"
@@ -158,7 +186,8 @@ exit 2
 SH
   chmod +x "$dir/bin/fm-turnend-guard.sh"
   out=$(printf '{"sessionId":"copilot-test","stop_hook_active":false}' \
-    | PATH="$node_path" GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" agent-stop)
+    | env -u COPILOT_AGENT_PROMPT PATH="$node_path" GITHUB_ACTIONS='' \
+      "$dir/bin/fm-copilot-hook.sh" agent-stop)
   decision=$(printf '%s' "$out" | node -e \
     'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(s).decision));')
   reason=$(printf '%s' "$out" | node -e \
@@ -206,7 +235,8 @@ SH
     err_file="$dir/$mode.err"
     status=0
     printf '%s' "$payload" \
-      | PATH="$node_path" GITHUB_ACTIONS='' "$dir/bin/fm-copilot-hook.sh" "$mode" \
+      | env -u COPILOT_AGENT_PROMPT PATH="$node_path" GITHUB_ACTIONS='' \
+        "$dir/bin/fm-copilot-hook.sh" "$mode" \
         >"$out_file" 2>"$err_file" || status=$?
     expect_code 2 "$status" "Copilot $mode denial"
     [ ! -s "$err_file" ] || fail "Copilot $mode denial leaked non-native stderr: $(cat "$err_file")"
@@ -224,6 +254,7 @@ EOF
 
 test_live_process_shape_detects_copilot
 test_github_actions_leaves_repository_hooks_inert
+test_cloud_agent_leaves_repository_hooks_inert
 test_local_primary_denies_task_tool
 test_malformed_payloads_stay_inert
 test_session_start_becomes_additional_context_without_python

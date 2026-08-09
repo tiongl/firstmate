@@ -14,7 +14,9 @@
 # except a shared policy script's explicit denial, which preserves its exit 2.
 set -u
 
-[ "${GITHUB_ACTIONS:-}" = true ] && exit 0
+if [ "${GITHUB_ACTIONS:-}" = true ] || [ "${COPILOT_AGENT_PROMPT+x}" = x ]; then
+  exit 0
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=${1:-}
