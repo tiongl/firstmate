@@ -19,19 +19,51 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=${1:-}
 
-json_field() {  # <payload> <python expression>
-  local payload=$1 expression=$2
-  command -v python3 >/dev/null 2>&1 || return 1
-  printf '%s' "$payload" | python3 -c \
-    "import json,sys; d=json.load(sys.stdin); v=$expression; print(v if isinstance(v, str) else json.dumps(v))" \
-    2>/dev/null
+json_field() {  # <payload> <field>
+  local payload=$1 field=$2
+  command -v node >/dev/null 2>&1 || return 1
+  FIELD="$field" node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      const data = JSON.parse(input);
+      const object = value =>
+        value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+      let value;
+      switch (process.env.FIELD) {
+        case "stop-active":
+          value = data.stop_hook_active ?? false;
+          break;
+        case "session-id":
+          value = data.sessionId ?? data.session_id ?? "unknown";
+          break;
+        case "command":
+          value = object(data.toolArgs).command ?? "";
+          break;
+        case "tool":
+          value = data.toolName ?? "";
+          break;
+        default:
+          process.exit(1);
+      }
+      process.stdout.write(typeof value === "string" ? value : JSON.stringify(value));
+    });
+  ' 2>/dev/null <<<"$payload"
 }
 
 json_object() {  # <field> <value>
   local field=$1 value=$2
-  command -v python3 >/dev/null 2>&1 || return 1
-  FIELD="$field" VALUE="$value" python3 -c \
-    'import json,os; print(json.dumps({os.environ["FIELD"]: os.environ["VALUE"]}, separators=(",", ":")))'
+  command -v node >/dev/null 2>&1 || return 1
+  FIELD="$field" VALUE="$value" node -e \
+    'process.stdout.write(JSON.stringify({[process.env.FIELD]: process.env.VALUE}) + "\n")'
+}
+
+json_block_decision() {  # <reason>
+  local reason=$1
+  command -v node >/dev/null 2>&1 || return 1
+  REASON="$reason" node -e \
+    'process.stdout.write(JSON.stringify({decision: "block", reason: process.env.REASON}) + "\n")'
 }
 
 case "$MODE" in
@@ -45,8 +77,8 @@ case "$MODE" in
   agent-stop)
     PAYLOAD=$(cat 2>/dev/null || true)
     [ -n "$PAYLOAD" ] || exit 0
-    STOP_ACTIVE=$(json_field "$PAYLOAD" 'd.get("stop_hook_active", False)') || exit 0
-    SESSION_ID=$(json_field "$PAYLOAD" 'd.get("sessionId", d.get("session_id", "unknown"))') || exit 0
+    STOP_ACTIVE=$(json_field "$PAYLOAD" stop-active) || exit 0
+    SESSION_ID=$(json_field "$PAYLOAD" session-id) || exit 0
     case "$STOP_ACTIVE" in
       true|false) ;;
       *) exit 0 ;;
@@ -63,14 +95,12 @@ case "$MODE" in
     [ "$STATUS" -eq 2 ] || exit 0
     REASON=$(cat "$REASON_FILE" 2>/dev/null || true)
     [ -n "$REASON" ] || exit 0
-    command -v python3 >/dev/null 2>&1 || exit 0
-    REASON="$REASON" python3 -c \
-      'import json,os; print(json.dumps({"decision":"block","reason":os.environ["REASON"]}, separators=(",", ":")))'
+    json_block_decision "$REASON" || exit 0
     ;;
   pre-arm|pre-cd)
     PAYLOAD=$(cat 2>/dev/null || true)
     [ -n "$PAYLOAD" ] || exit 0
-    COMMAND=$(json_field "$PAYLOAD" 'd.get("toolArgs", {}).get("command", "")') || exit 0
+    COMMAND=$(json_field "$PAYLOAD" command) || exit 0
     [ -n "$COMMAND" ] || exit 0
     if [ "$MODE" = pre-arm ]; then
       exec "$SCRIPT_DIR/fm-arm-pretool-check.sh" --command "$COMMAND" --claude
@@ -80,7 +110,7 @@ case "$MODE" in
   pre-subagent)
     PAYLOAD=$(cat 2>/dev/null || true)
     [ -n "$PAYLOAD" ] || exit 0
-    TOOL=$(json_field "$PAYLOAD" 'd.get("toolName", "")') || exit 0
+    TOOL=$(json_field "$PAYLOAD" tool) || exit 0
     [ -n "$TOOL" ] || exit 0
     exec "$SCRIPT_DIR/fm-subagent-pretool-check.sh" --tool "$TOOL" --claude
     ;;
