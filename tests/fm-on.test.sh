@@ -413,6 +413,10 @@ out=$(
 )
 set -e
 assert_contains "$out" 'mode=check' "the trusted doctor could not bootstrap while git was unavailable"
+assert_not_contains "$out" 'bootstrap identity cannot be verified' \
+  "the trusted doctor bootstrap could not verify its pinned identity"
+assert_not_contains "$out" 'does not match the trusted bootstrap identity' \
+  "the trusted doctor bootstrap rejected its pinned identity"
 printf '\n' >> "$REMOTE_ROOT/bin/fm-remote-doctor.sh"
 set +e
 out=$(
