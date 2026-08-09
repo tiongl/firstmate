@@ -571,6 +571,42 @@ meta_value() {
   fm_meta_get "$meta" "$key"
 }
 
+recorded_copilot_hook_path() {
+  local meta=$1 task_id=$2 rel base index
+  rel=$(meta_value "$meta" copilot_hook)
+  [ -n "$rel" ] || return 0
+  base=".github/hooks/fm-busy-state-$task_id"
+  if [ "$rel" = "$base.json" ]; then
+    printf '%s\n' "$rel"
+    return 0
+  fi
+  index=${rel#"$base-"}
+  if [ "$index" = "$rel" ] || [ "${index%.json}" = "$index" ]; then
+    echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+    return 1
+  fi
+  index=${index%.json}
+  case "$index" in
+    ''|0|0*|*[!0-9]*)
+      echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+      return 1
+      ;;
+  esac
+  if [ "${#index}" -gt 3 ] || [ "$index" -gt 100 ]; then
+    echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+    return 1
+  fi
+  printf '%s\n' "$rel"
+}
+
+remove_recorded_copilot_hook() {
+  local worktree=$1 meta=$2 task_id=$3 rel
+  rel=$(recorded_copilot_hook_path "$meta" "$task_id") || return 1
+  [ -n "$rel" ] || return 0
+  [ -d "$worktree" ] || return 0
+  rm -f -- "$worktree/$rel"
+}
+
 require_orca_worktree_id() {
   local meta=$1 id
   id=$(meta_value "$meta" orca_worktree_id)
@@ -1987,6 +2023,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
     fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    recorded_copilot_hook_path "$child_meta" "$child_id" >/dev/null || return 1
     child_backend=$FM_BACKEND_VALIDATED_BACKEND
     child_target=$FM_BACKEND_VALIDATED_TARGET
     if [ "$child_backend" = herdr ]; then
@@ -2045,6 +2082,9 @@ cleanup_firstmate_home_children() {
       else
         fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" 2>/dev/null || true
       fi
+    fi
+    if [ "$child_kind" != secondmate ]; then
+      remove_recorded_copilot_hook "$child_wt" "$child_meta" "$child_id" || return 1
     fi
     if [ "$child_kind" = secondmate ]; then
       child_home=$(meta_value "$child_meta" home)
@@ -2107,6 +2147,7 @@ remove_secondmate_registry_entry() {
 }
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+recorded_copilot_hook_path "$META" "$ID" >/dev/null || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
@@ -2234,6 +2275,9 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
+if [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
+  remove_recorded_copilot_hook "$WT" "$META" "$ID" || exit 1
+fi
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1

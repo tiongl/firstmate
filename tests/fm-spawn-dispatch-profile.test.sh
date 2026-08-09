@@ -445,6 +445,8 @@ test_copilot_threads_model_effort_and_worker_hook() {
   hook="$WT_DIR/.github/hooks/fm-busy-state-$id-1.json"
   assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
   python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
+  [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-1.json" ] \
+    || fail "copilot spawn did not record its exact worker lifecycle hook"
   assert_grep "state=busy source=fm-spawn" "$HOME_DIR/state/$id.busy-state" \
     "copilot spawn did not seed semantic busy state"
   pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
