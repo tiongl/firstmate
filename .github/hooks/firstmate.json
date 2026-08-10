@@ -13,7 +13,7 @@
     "preToolUse": [
       {
         "type": "command",
-        "matcher": "bash",
+        "matcher": "^(bash|powershell)$",
         "bash": "bin/fm-copilot-hook.sh pre-arm",
         "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh pre-arm'",
         "cwd": ".",
@@ -21,7 +21,7 @@
       },
       {
         "type": "command",
-        "matcher": "bash",
+        "matcher": "^(bash|powershell)$",
         "bash": "bin/fm-copilot-hook.sh pre-cd",
         "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh pre-cd'",
         "cwd": ".",

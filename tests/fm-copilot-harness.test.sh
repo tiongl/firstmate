@@ -28,6 +28,11 @@ for (const [event, modes] of Object.entries(expected)) {
     if (!entry.powershell.includes("Get-Command bash.exe -All -CommandType Application")) process.exit(1);
     if (!entry.powershell.includes("git.exe")) process.exit(1);
     if (!entry.powershell.endsWith(`-lc 'bin/fm-copilot-hook.sh ${modes[index]}'`)) process.exit(1);
+    if (event === "preToolUse" && (modes[index] === "pre-arm" || modes[index] === "pre-cd")) {
+      if (typeof entry.matcher !== "string") process.exit(1);
+      const matcher = new RegExp(entry.matcher);
+      if (!matcher.test("bash") || !matcher.test("powershell") || matcher.test("task")) process.exit(1);
+    }
   });
 }
 NODE
@@ -281,6 +286,41 @@ EOF
   pass "copilot preToolUse denials use native stdout decisions without python3"
 }
 
+test_powershell_calls_reach_shell_policies() {
+  local dir mode command out status
+  dir="$TMP_ROOT/powershell-policy"
+  make_hook_fixture "$dir"
+  cp "$ROOT/bin/fm-arm-pretool-check.sh" "$ROOT/bin/fm-arm-command-policy.mjs" \
+    "$ROOT/bin/fm-cd-pretool-check.sh" "$ROOT/bin/fm-cd-command-policy.mjs" "$dir/bin/"
+  chmod +x "$dir/bin/fm-arm-pretool-check.sh" "$dir/bin/fm-cd-pretool-check.sh"
+  printf '# fixture\n' > "$dir/AGENTS.md"
+  git -C "$dir" init -q
+
+  while IFS='|' read -r mode command; do
+    status=0
+    out=$(node -e 'process.stdout.write(JSON.stringify({toolName:"powershell",toolArgs:{command:process.argv[1]}}))' "$command" \
+      | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" \
+        "$dir/bin/fm-copilot-hook.sh" "$mode") || status=$?
+    expect_code 2 "$status" "PowerShell $mode denial"
+    printf '%s' "$out" | node -e \
+      'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => { const d=JSON.parse(s); if (d.permissionDecision !== "deny" || !d.permissionDecisionReason) process.exit(1); });' \
+      || fail "PowerShell $mode denial lost its native decision: $out"
+  done <<'EOF'
+pre-arm|bin/fm-watch-arm.sh &
+pre-cd|cd projects/demo
+EOF
+
+  for mode in pre-arm pre-cd; do
+    status=0
+    out=$(printf '{"toolName":"powershell","toolArgs":{"command":"Write-Output safe"}}' \
+      | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" \
+        "$dir/bin/fm-copilot-hook.sh" "$mode") || status=$?
+    expect_code 0 "$status" "PowerShell $mode allow"
+    [ -z "$out" ] || fail "PowerShell $mode allow emitted a decision: $out"
+  done
+  pass "PowerShell shell calls reach command policies and preserve deny and allow decisions"
+}
+
 test_repository_hook_has_native_windows_dispatch
 test_live_process_shape_detects_copilot
 test_github_actions_leaves_repository_hooks_inert
@@ -290,5 +330,6 @@ test_malformed_payloads_stay_inert
 test_session_start_becomes_additional_context_without_python
 test_agent_stop_translates_block_decision_without_python
 test_pretool_denials_use_native_output_without_python
+test_powershell_calls_reach_shell_policies
 
 echo "# all fm-copilot-harness tests passed"
