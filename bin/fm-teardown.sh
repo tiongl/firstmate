@@ -627,24 +627,66 @@ remove_owned_exclude_path() {
   rm -f -- "$tmp"
 }
 
+resolve_copilot_exclude_path() {
+  local repo=$1 meta=$2 common common_real exclude exclude_dir exclude_dir_real
+  [ -n "$repo" ] && [ -d "$repo" ] || {
+    echo "REFUSED: cannot resolve Copilot worker hook exclusion repository for $meta" >&2
+    return 1
+  }
+  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$repo/$common" ;;
+  esac
+  common_real=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd -P) || return 1
+  [ ! -L "$common_real/info" ] || {
+    echo "REFUSED: unsafe Copilot worker hook exclusion parent for $meta" >&2
+    return 1
+  }
+  exclude=$(git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null) || return 1
+  case "$exclude" in
+    /*) ;;
+    *) exclude="$repo/$exclude" ;;
+  esac
+  [ "${exclude##*/}" = exclude ] && [ ! -L "$exclude" ] || {
+    echo "REFUSED: unsafe Copilot worker hook exclusion path for $meta" >&2
+    return 1
+  }
+  exclude_dir=${exclude%/*}
+  exclude_dir_real=$(CDPATH='' cd -- "$exclude_dir" 2>/dev/null && pwd -P) || return 1
+  if [ "$exclude_dir_real" != "$common_real/info" ]; then
+    echo "REFUSED: Copilot worker hook exclusion escapes the recorded repository for $meta" >&2
+    return 1
+  fi
+  printf '%s\n' "$exclude_dir_real/exclude"
+}
+
 remove_recorded_copilot_hook() (
-  local worktree=$1 meta=$2 task_id=$3 rel expected_hash exclude_owned worktree_real
-  local github hooks hooks_real hook actual_hash exclude lock
+  local worktree=$1 project=$2 meta=$3 task_id=$4 rel expected_hash exclude_owned worktree_real
+  local github hooks hooks_real hook actual_hash exclude lock repo
   rel=$(recorded_copilot_hook_path "$meta" "$task_id") || return 1
   [ -n "$rel" ] || return 0
-  [ -d "$worktree" ] || return 0
   expected_hash=$(meta_value "$meta" copilot_hook_hash)
   exclude_owned=$(meta_value "$meta" copilot_hook_exclude_owned)
   case "$exclude_owned" in ''|0|1) ;; *)
     echo "REFUSED: invalid Copilot worker hook exclusion ownership in $meta" >&2
     return 1
   esac
-  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
-  exclude=$(git -C "$worktree" rev-parse --git-path info/exclude 2>/dev/null) || return 1
-  [ -n "$exclude" ] || return 1
+  if [ -d "$worktree" ]; then
+    repo=$worktree
+  else
+    [ "$exclude_owned" = 1 ] || return 0
+    repo=$project
+  fi
+  exclude=$(resolve_copilot_exclude_path "$repo" "$meta") || return 1
   lock="$exclude.fm-copilot-hooks.lock"
   fm_lock_acquire_wait "$lock"
   trap 'fm_lock_release "$lock"' EXIT
+  if [ ! -d "$worktree" ]; then
+    remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
+  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
   github="$worktree/.github"
   hooks="$github/hooks"
   if [ -L "$github" ] || [ -L "$hooks" ]; then
@@ -2184,7 +2226,7 @@ cleanup_firstmate_home_children() {
       fi
     fi
     if [ "$child_kind" != secondmate ]; then
-      remove_recorded_copilot_hook "$child_wt" "$child_meta" "$child_id" || return 1
+      remove_recorded_copilot_hook "$child_wt" "$child_proj" "$child_meta" "$child_id" || return 1
     fi
     if [ "$child_kind" = secondmate ]; then
       child_home=$(meta_value "$child_meta" home)
@@ -2375,8 +2417,8 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-if [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  remove_recorded_copilot_hook "$WT" "$META" "$ID" || exit 1
+if [ "$KIND" != secondmate ]; then
+  remove_recorded_copilot_hook "$WT" "$PROJ" "$META" "$ID" || exit 1
 fi
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then

@@ -227,13 +227,15 @@ fm_backend_zellij_session_exists() {  # <session>
 # Verified: `zellij attach -b <name>` with stdin redirected from /dev/null and
 # no controlling TTY creates the session and returns promptly (it cannot
 # actually attach without a TTY, so it exits after creating); running it again
-# against an EXISTING session prints "Session already exists" and exits 1 -
-# harmless here because existence is checked first. Keep creation in the
-# foreground until the command has handed the session off to its server.
+# against an EXISTING session prints "Session already exists" and exits 1.
+# Keep creation in the foreground until the command has handed the session off
+# to its server, and tolerate another creator winning between the two calls.
 fm_backend_zellij_server_ensure() {  # <session>
   local session=$1 i
   fm_backend_zellij_session_exists "$session" && return 0
-  zellij attach -b "$session" </dev/null >/dev/null 2>&1 || return 1
+  if ! zellij attach -b "$session" </dev/null >/dev/null 2>&1; then
+    fm_backend_zellij_session_exists "$session" || return 1
+  fi
   for i in $(seq 1 20); do
     if fm_backend_zellij_session_exists "$session"; then
       sleep 1

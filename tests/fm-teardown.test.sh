@@ -1385,6 +1385,27 @@ test_teardown_preserves_preexisting_copilot_exclusion() {
   pass "teardown preserves pre-existing Copilot hook exclusions"
 }
 
+test_teardown_removes_copilot_exclusion_after_worktree_return() {
+  local case_dir exclude
+  case_dir=$(make_case copilot-exclusion-after-worktree-return)
+  write_meta "$case_dir" local-only ship
+  exclude="$(git -C "$case_dir/project" rev-parse --absolute-git-dir)/info/exclude"
+  printf '%s\n' '.github/hooks/fm-busy-state-task-x1.json' >> "$exclude"
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    'copilot_hook_hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    'copilot_hook_exclude_owned=1' >> "$case_dir/state/task-x1.meta"
+  git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
+
+  run_teardown "$case_dir" --force >/dev/null
+
+  ! grep -qxF '.github/hooks/fm-busy-state-task-x1.json' "$exclude" \
+    || fail "teardown left the worker-owned ignore rule after worktree return"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "teardown retained task metadata after retiring the orphaned ignore rule"
+  pass "teardown retires Copilot exclusions after the worker worktree is gone"
+}
+
 test_teardown_preserves_copilot_hook_whose_ownership_changed() {
   local case_dir hook hash rc=0
   case_dir=$(make_case copilot-hook-ownership-changed)
@@ -2691,6 +2712,7 @@ test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_teardown_removes_only_recorded_copilot_hook
 test_teardown_preserves_preexisting_copilot_exclusion
+test_teardown_removes_copilot_exclusion_after_worktree_return
 test_teardown_preserves_copilot_hook_whose_ownership_changed
 test_teardown_preserves_copilot_hook_that_became_tracked
 test_teardown_refuses_unsafe_copilot_hook_path

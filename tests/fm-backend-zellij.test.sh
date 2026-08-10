@@ -47,10 +47,17 @@ if [ "${1:-}" = --version ]; then
   exit 0
 fi
 if [ "${1:-}" = list-sessions ]; then
+  if [ -n "${FM_ZELLIJ_SESSION_READY_FILE:-}" ] && [ -f "$FM_ZELLIJ_SESSION_READY_FILE" ]; then
+    printf '%s\n' "${FM_ZELLIJ_SESSION_AFTER_ATTACH:-}"
+    exit 0
+  fi
   printf '%s\n' "${FM_ZELLIJ_SESSION_LIST:-}"
   exit 0
 fi
 if [ "${1:-}" = attach ]; then
+  if [ "${FM_ZELLIJ_ATTACH_EXIT:-0}" -ne 0 ] && [ -n "${FM_ZELLIJ_SESSION_READY_FILE:-}" ]; then
+    : > "$FM_ZELLIJ_SESSION_READY_FILE"
+  fi
   exit "${FM_ZELLIJ_ATTACH_EXIT:-0}"
 fi
 
@@ -440,6 +447,33 @@ test_server_ensure_skips_attach_when_already_exists() {
   expect_code 0 $? "server_ensure should succeed immediately when the session already exists"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''attach' "server_ensure should not call attach when the session already exists"
   pass "fm_backend_zellij_server_ensure: reuses an existing session without calling attach"
+}
+
+test_server_ensure_accepts_concurrent_creator() {
+  local dir fb
+  dir="$TMP_ROOT/server-concurrent-create"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='' FM_ZELLIJ_ATTACH_EXIT=1 \
+    FM_ZELLIJ_SESSION_READY_FILE="$dir/session-ready" \
+    FM_ZELLIJ_SESSION_AFTER_ATTACH='firstmate' \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_server_ensure firstmate' "$ROOT"
+  expect_code 0 $? "server_ensure should accept a healthy session created concurrently"
+  [ "$(grep -c $'\x1f''attach' "$dir/log")" -eq 1 ] \
+    || fail "server_ensure should attempt session creation exactly once"
+  pass "fm_backend_zellij_server_ensure: accepts a concurrent creator's healthy session"
+}
+
+test_server_ensure_preserves_attach_failure() {
+  local dir fb status
+  dir="$TMP_ROOT/server-attach-failure"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='' FM_ZELLIJ_ATTACH_EXIT=1 \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_server_ensure firstmate' "$ROOT"
+  status=$?
+  [ "$status" -ne 0 ] || fail "server_ensure should preserve attach failure when no session appeared"
+  pass "fm_backend_zellij_server_ensure: preserves attach failure without a concurrent session"
 }
 
 # --- dispatch wiring (fm-backend.sh) ------------------------------------------
@@ -1116,6 +1150,8 @@ test_session_exists_true_when_listed
 test_session_exists_false_when_absent
 test_session_exists_false_when_exited
 test_server_ensure_skips_attach_when_already_exists
+test_server_ensure_accepts_concurrent_creator
+test_server_ensure_preserves_attach_failure
 test_dispatch_routes_zellij_backend
 test_dispatch_busy_state_unknown_for_zellij
 test_create_task_refuses_duplicate_label
