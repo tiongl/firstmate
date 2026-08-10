@@ -245,6 +245,8 @@ The checkpoint is deliberately foreground and bounded so Codex regains control r
 
 Copilot loads `AGENTS.md` and repository hooks natively.
 Firstmate's tracked `.github/hooks/firstmate.json` runs session start, the watcher-arm and directory-change seatbelts, the delegation-shape guard, and the turn-end backstop.
+Copilot worker launches are supported only on Unix-like hosts where those Bash policies are verified; `fm-spawn.sh` refuses native Windows environments.
+Experimental native-Windows Zellij backend support is a separate runtime lane and does not extend Copilot worker support.
 The `.claude/settings.json` compatibility surface stays inert when `CLAUDE_PROJECT_DIR` is absent, preventing Copilot from running the same lifecycle twice.
 Primary watcher supervision uses one standalone asynchronous Bash call for `bin/fm-watch-arm.sh`; Copilot's native shell-completion notification returns the actionable close to the main session.
 

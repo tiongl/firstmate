@@ -17,6 +17,7 @@ Prerequisites:
 The native-Windows experiment uses Git Bash for Firstmate and native Windows builds of Zellij, Git, and the worker CLI.
 Configure Zellij's `default_shell` as `C:/Program Files/Git/bin/bash.exe` so every task pane runs the Bash commands that Firstmate sends.
 PowerShell and `cmd.exe` task panes are not supported by the current adapter.
+Copilot workers are not supported in this native-Windows lane because their delegation policies are verified only for Unix-like Bash tool calls.
 
 Select it with local `config/backend` containing `zellij`, `FM_BACKEND=zellij` for one launch, or an explicit request to Firstmate.
 It is never auto-detected.

@@ -460,16 +460,14 @@ test_copilot_threads_model_effort_and_worker_hook() {
   hook="$WT_DIR/.github/hooks/fm-busy-state-$id-2.json"
   assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
   python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
-  node - "$hook" <<'NODE' || fail "copilot worker lifecycle hook lacks equivalent Git Bash PowerShell dispatch"
+  node - "$hook" <<'NODE' || fail "copilot worker lifecycle hook claims an unsupported non-Bash path"
 const fs = require("fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 for (const event of ["userPromptSubmitted", "agentStop", "sessionEnd"]) {
   const entries = config.hooks[event];
   if (!Array.isArray(entries) || entries.length !== 1) process.exit(1);
   const entry = entries[0];
-  if (entry.type !== "command" || typeof entry.bash !== "string" || typeof entry.powershell !== "string") process.exit(1);
-  if (!entry.powershell.includes("Get-Command bash.exe -All -CommandType Application")) process.exit(1);
-  if (!entry.powershell.includes("git.exe") || !entry.powershell.includes("-lc")) process.exit(1);
+  if (entry.type !== "command" || typeof entry.bash !== "string" || "powershell" in entry) process.exit(1);
 }
 NODE
   [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-2.json" ] \
@@ -490,6 +488,33 @@ NODE
   assert_grep "state=busy source=fm-spawn" "$HOME_DIR/state/$id.busy-state" \
     "copilot spawn did not seed semantic busy state"
   pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
+}
+
+test_copilot_spawn_refuses_native_windows() {
+  local rec id out status
+  id=profile-copilot-native-windows
+  rec=$(make_spawn_case profile-copilot-native-windows copilot "$id")
+  read_case_record "$rec"
+  cat > "$FAKEBIN_DIR/uname" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' MINGW64_NT-10.0
+SH
+  chmod +x "$FAKEBIN_DIR/uname"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot worker spawn succeeded on native Windows"
+  assert_contains "$out" "Copilot workers are unsupported on native Windows" \
+    "copilot worker refusal did not explain the unsupported platform"
+  [ ! -s "$LAUNCH_LOG" ] || fail "copilot worker refusal still launched the harness"
+  assert_absent "$HOME_DIR/state/$id.meta" "copilot worker refusal published task metadata"
+  assert_absent "$WT_DIR/.github/hooks/fm-busy-state-$id.json" \
+    "copilot worker refusal installed lifecycle hooks"
+  assert_absent "$HOME_DIR/state/$id.busy-state" \
+    "copilot worker refusal armed semantic busy state"
+  pass "copilot worker launch refuses native Windows before lifecycle setup"
 }
 
 test_copilot_spawn_cleans_hook_when_metadata_publication_fails() {
@@ -872,6 +897,7 @@ test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort
 test_copilot_threads_model_effort_and_worker_hook
+test_copilot_spawn_refuses_native_windows
 test_copilot_spawn_cleans_hook_when_metadata_publication_fails
 test_copilot_spawn_refuses_symlinked_hook_parent
 test_copilot_spawn_refuses_symlinked_exclusion_paths

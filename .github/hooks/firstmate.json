@@ -5,7 +5,6 @@
       {
         "type": "command",
         "bash": "bin/fm-copilot-hook.sh session-start",
-        "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh session-start'",
         "cwd": ".",
         "timeoutSec": 180
       }
@@ -13,24 +12,21 @@
     "preToolUse": [
       {
         "type": "command",
-        "matcher": "^(bash|powershell)$",
+        "matcher": "^bash$",
         "bash": "bin/fm-copilot-hook.sh pre-arm",
-        "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh pre-arm'",
         "cwd": ".",
         "timeoutSec": 10
       },
       {
         "type": "command",
-        "matcher": "^(bash|powershell)$",
+        "matcher": "^bash$",
         "bash": "bin/fm-copilot-hook.sh pre-cd",
-        "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh pre-cd'",
         "cwd": ".",
         "timeoutSec": 10
       },
       {
         "type": "command",
         "bash": "bin/fm-copilot-hook.sh pre-subagent",
-        "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh pre-subagent'",
         "cwd": ".",
         "timeoutSec": 10
       }
@@ -39,7 +35,6 @@
       {
         "type": "command",
         "bash": "bin/fm-copilot-hook.sh agent-stop",
-        "powershell": "$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { throw 'Git Bash bash.exe not found' }; & $bash.Source -lc 'bin/fm-copilot-hook.sh agent-stop'",
         "cwd": ".",
         "timeoutSec": 30
       }

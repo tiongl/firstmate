@@ -1034,6 +1034,15 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   exit 1
 fi
 
+if [ "$HARNESS" = copilot ]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MSYS*|MINGW*|CYGWIN*)
+      echo "error: Copilot workers are unsupported on native Windows because Firstmate's delegation policies are verified only for Bash tool calls; Windows Zellij support is a separate experimental backend" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # pi-signed is an explicitly selected executable identity, not an alias that may
 # silently fall back to pi. Resolve it from PATH before creating an endpoint and
 # retain the literal name in the launch command and task metadata.
@@ -1252,16 +1261,6 @@ esac
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-powershell_single_quote() {
-  printf '%s' "$1" | sed "s/'/''/g"
-}
-
-copilot_powershell_git_bash() {
-  local command
-  command=$(powershell_single_quote "$1")
-  printf "\$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path \$_.Source -Parent) 'git.exe') } | Select-Object -First 1; if (\$null -eq \$bash) { throw 'Git Bash bash.exe not found' }; & \$bash.Source -lc '%s'" "$command"
 }
 
 resolved_existing_dir() {
@@ -2077,10 +2076,7 @@ EOF
       j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-      ps_submit=$(json_escape "$(copilot_powershell_git_bash "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")")
-      ps_stop=$(json_escape "$(copilot_powershell_git_bash "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")")
-      ps_sessionend=$(json_escape "$(copilot_powershell_git_bash "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")")
-      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\",\"powershell\":\"$ps_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\",\"powershell\":\"$ps_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\",\"powershell\":\"$ps_sessionend\"}]}}"
+      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\"}]}}"
       copilot_hook_index=0
       while :; do
         copilot_hook_rel=".github/hooks/fm-busy-state-$ID"
