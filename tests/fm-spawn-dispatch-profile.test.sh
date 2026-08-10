@@ -14,8 +14,21 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
 make_spawn_fakebin() {
-  local dir=$1 fakebin
+  local dir=$1 fakebin real_git
   fakebin=$(fm_fakebin "$dir")
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+if [ "\${FM_TEST_FAIL_COPILOT_META:-0}" = 1 ] \
+   && [ "\${1:-}" = -C ] \
+   && [ "\${3:-}" = rev-parse ] \
+   && [ "\${4:-}" = --git-path ] \
+   && [ "\${5:-}" = info/exclude ]; then
+  mkdir -p "\${FM_TEST_FAIL_COPILOT_META_PATH:?}"
+fi
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -452,6 +465,62 @@ test_copilot_threads_model_effort_and_worker_hook() {
   pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
 }
 
+test_copilot_spawn_cleans_hook_when_metadata_publication_fails() {
+  local rec id out status hook
+  id=profile-copilot-meta-fail
+  rec=$(make_spawn_case profile-copilot-meta-fail copilot "$id")
+  read_case_record "$rec"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+
+  out=$(FM_TEST_FAIL_COPILOT_META=1 \
+    FM_TEST_FAIL_COPILOT_META_PATH="$HOME_DIR/state/$id.meta" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn succeeded when metadata publication failed"
+  assert_absent "$hook" "failed copilot spawn left an unowned lifecycle hook active"
+  pass "copilot spawn removes its hook when metadata publication fails"
+}
+
+test_copilot_spawn_refuses_symlinked_hook_parent() {
+  local rec id out status escaped
+  id=profile-copilot-symlink-github
+  rec=$(make_spawn_case profile-copilot-symlink-github copilot "$id")
+  read_case_record "$rec"
+  escaped="$CASE_DIR/escaped-github"
+  mkdir -p "$escaped"
+  ln -s "$escaped" "$WT_DIR/.github"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked hook parent"
+  assert_contains "$out" "refusing unsafe Copilot hook parent" \
+    "copilot spawn did not explain the unsafe hook parent"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked hook parent"
+
+  id=profile-copilot-symlink-hooks
+  rec=$(make_spawn_case profile-copilot-symlink-hooks copilot "$id")
+  read_case_record "$rec"
+  escaped="$CASE_DIR/escaped-hooks"
+  mkdir -p "$escaped" "$WT_DIR/.github"
+  ln -s "$escaped" "$WT_DIR/.github/hooks"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked hooks directory"
+  assert_contains "$out" "refusing unsafe Copilot hook parent" \
+    "copilot spawn did not explain the unsafe hooks directory"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked hooks directory"
+  pass "copilot spawn refuses symlinked hook parents"
+}
+
 test_grok_threads_model_and_reasoning_effort() {
   local rec id out status launch
   id=profile-grok-z5
@@ -724,6 +793,8 @@ test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort
 test_copilot_threads_model_effort_and_worker_hook
+test_copilot_spawn_cleans_hook_when_metadata_publication_fails
+test_copilot_spawn_refuses_symlinked_hook_parent
 test_grok_threads_model_and_reasoning_effort
 test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort

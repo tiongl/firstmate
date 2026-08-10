@@ -630,6 +630,47 @@ SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+COPILOT_HOOK_ABORT_CLEANUP=0
+COPILOT_HOOK_ABORT_WORKTREE=
+COPILOT_HOOK_ABORT_REL=
+
+copilot_hook_parent() {
+  local worktree=$1 worktree_real github hooks hooks_real
+  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
+  github="$worktree/.github"
+  hooks="$github/hooks"
+  if [ -L "$github" ] || { [ -e "$github" ] && [ ! -d "$github" ]; }; then
+    echo "error: refusing unsafe Copilot hook parent: $github" >&2
+    return 1
+  fi
+  mkdir -p "$github" || return 1
+  if [ -L "$github" ] || [ ! -d "$github" ]; then
+    echo "error: refusing unsafe Copilot hook parent: $github" >&2
+    return 1
+  fi
+  if [ -L "$hooks" ] || { [ -e "$hooks" ] && [ ! -d "$hooks" ]; }; then
+    echo "error: refusing unsafe Copilot hook parent: $hooks" >&2
+    return 1
+  fi
+  mkdir -p "$hooks" || return 1
+  if [ -L "$github" ] || [ -L "$hooks" ] || [ ! -d "$hooks" ]; then
+    echo "error: refusing unsafe Copilot hook parent: $hooks" >&2
+    return 1
+  fi
+  hooks_real=$(CDPATH='' cd -- "$hooks" 2>/dev/null && pwd -P) || return 1
+  if [ "$hooks_real" != "$worktree_real/.github/hooks" ]; then
+    echo "error: Copilot hook parent escapes the isolated worktree: $hooks" >&2
+    return 1
+  fi
+  printf '%s\n' "$hooks_real"
+}
+
+remove_spawn_copilot_hook() {
+  local worktree=$1 rel=$2 hooks_real
+  [ -n "$worktree" ] && [ -n "$rel" ] || return 0
+  hooks_real=$(copilot_hook_parent "$worktree") || return 1
+  rm -f -- "$hooks_real/${rel##*/}"
+}
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -650,6 +691,10 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  if [ "$COPILOT_HOOK_ABORT_CLEANUP" = 1 ]; then
+    COPILOT_HOOK_ABORT_CLEANUP=0
+    remove_spawn_copilot_hook "$COPILOT_HOOK_ABORT_WORKTREE" "$COPILOT_HOOK_ABORT_REL" || true
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -1955,7 +2000,7 @@ EOF
       exclude_path '.claude/settings.local.json'
       ;;
     copilot*)
-      mkdir -p "$WT/.github/hooks"
+      copilot_hooks_dir=$(copilot_hook_parent "$WT") || exit 1
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source copilot-hook"
       j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
@@ -1967,7 +2012,10 @@ EOF
         copilot_hook_rel=".github/hooks/fm-busy-state-$ID"
         [ "$copilot_hook_index" -eq 0 ] || copilot_hook_rel="$copilot_hook_rel-$copilot_hook_index"
         copilot_hook_rel="$copilot_hook_rel.json"
-        if (set -C; printf '%s\n' "$copilot_hook_json" > "$WT/$copilot_hook_rel") 2>/dev/null; then
+        if (set -C; printf '%s\n' "$copilot_hook_json" > "$copilot_hooks_dir/${copilot_hook_rel##*/}") 2>/dev/null; then
+          COPILOT_HOOK_ABORT_WORKTREE=$WT
+          COPILOT_HOOK_ABORT_REL=$copilot_hook_rel
+          COPILOT_HOOK_ABORT_CLEANUP=1
           break
         fi
         copilot_hook_index=$((copilot_hook_index + 1))
@@ -2258,6 +2306,7 @@ META_WINDOW=$T
     echo "projects=$SECONDMATE_PROJECTS"
   fi
 } > "$STATE/$ID.meta"
+[ -z "${copilot_hook_rel:-}" ] || COPILOT_HOOK_ABORT_CLEANUP=0
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

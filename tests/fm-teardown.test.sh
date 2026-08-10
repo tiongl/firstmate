@@ -1367,6 +1367,29 @@ test_teardown_refuses_unsafe_copilot_hook_path() {
   pass "teardown refuses unsafe Copilot hook metadata without changing ownership"
 }
 
+test_teardown_refuses_symlinked_copilot_hook_parent() {
+  local case_dir escaped hook rc=0
+  case_dir=$(make_case copilot-hook-symlink-parent)
+  write_meta "$case_dir" local-only ship
+  escaped="$case_dir/escaped-hooks"
+  hook="$escaped/fm-busy-state-task-x1.json"
+  mkdir -p "$escaped" "$case_dir/wt/.github"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  ln -s "$escaped" "$case_dir/wt/.github/hooks"
+  printf '%s\n' 'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" --force >"$case_dir/stdout" 2>"$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "teardown accepted a symlinked Copilot hook parent"
+  assert_present "$hook" "teardown deleted a hook through a symlinked parent"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "symlinked hook parent refusal erased task ownership"
+  assert_grep "unsafe Copilot worker hook parent" "$case_dir/stderr" \
+    "symlinked hook parent refusal was not actionable"
+  pass "teardown refuses symlinked Copilot hook parents"
+}
+
 test_forced_secondmate_cleanup_removes_child_copilot_hook() {
   local case_dir home hook
   case_dir=$(make_case copilot-child-hook-cleanup)
@@ -2579,6 +2602,7 @@ test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_teardown_removes_only_recorded_copilot_hook
 test_teardown_refuses_unsafe_copilot_hook_path
+test_teardown_refuses_symlinked_copilot_hook_parent
 test_forced_secondmate_cleanup_removes_child_copilot_hook
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes

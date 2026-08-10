@@ -600,11 +600,33 @@ recorded_copilot_hook_path() {
 }
 
 remove_recorded_copilot_hook() {
-  local worktree=$1 meta=$2 task_id=$3 rel
+  local worktree=$1 meta=$2 task_id=$3 rel worktree_real github hooks hooks_real
   rel=$(recorded_copilot_hook_path "$meta" "$task_id") || return 1
   [ -n "$rel" ] || return 0
   [ -d "$worktree" ] || return 0
-  rm -f -- "$worktree/$rel"
+  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
+  github="$worktree/.github"
+  hooks="$github/hooks"
+  if [ -L "$github" ] || [ -L "$hooks" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  [ -e "$github" ] || return 0
+  if [ ! -d "$github" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  [ -e "$hooks" ] || return 0
+  if [ ! -d "$hooks" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  hooks_real=$(CDPATH='' cd -- "$hooks" 2>/dev/null && pwd -P) || return 1
+  if [ "$hooks_real" != "$worktree_real/.github/hooks" ]; then
+    echo "REFUSED: Copilot worker hook parent escapes the isolated worktree for $meta" >&2
+    return 1
+  fi
+  rm -f -- "$hooks_real/${rel##*/}"
 }
 
 require_orca_worktree_id() {
