@@ -11,5 +11,5 @@ When this session owns supervision and away mode is not active:
 8. On that notification, drain queued wakes before reading further output, then handle the actionable reason and start the next asynchronous cycle when supervision is still needed.
 9. Waiting on a healthy cycle is silent.
 
-The repository `agentStop` hook is the backstop for local Copilot CLI sessions and stays inert under GitHub Actions.
+The repository `agentStop` hook is the backstop for local Copilot CLI sessions and stays inert for Copilot cloud-agent jobs, including GitHub Actions.
 It blocks a blind turn ending and asks Copilot to restore the same asynchronous supervision path.
