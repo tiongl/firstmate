@@ -113,7 +113,8 @@ copilot
 ```
 
 Copilot primary and worker sessions are supported only on Unix-like hosts, including WSL.
-Firstmate refuses native-Windows Copilot primary startup because its delegation policies are not verified for PowerShell; the experimental [Windows Zellij backend](docs/zellij-backend.md) remains a separate runtime lane.
+Firstmate denies every native-Windows Copilot primary tool call because its delegation policies are not verified for PowerShell; use macOS, Linux, or WSL instead.
+The experimental [Windows Zellij backend](docs/zellij-backend.md) remains a separate runtime lane.
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
 For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.

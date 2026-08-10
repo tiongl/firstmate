@@ -8,7 +8,7 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-copilot-harness)
 HOOK="$ROOT/bin/fm-copilot-hook.sh"
 
-test_repository_hook_refuses_native_windows_primary_startup() {
+test_repository_hook_routes_native_windows_tools_to_blocking_guard() {
   if ! node - "$ROOT/.github/hooks/firstmate.json" <<'NODE'
 const fs = require("fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -24,17 +24,10 @@ for (const [event, modes] of Object.entries(expected)) {
   entries.forEach((entry, index) => {
     if (entry.type !== "command" || entry.cwd !== ".") process.exit(1);
     if (entry.bash !== `bin/fm-copilot-hook.sh ${modes[index]}`) process.exit(1);
-    if (event === "sessionStart") {
-      if (typeof entry.powershell !== "string") process.exit(1);
-      const normalized = entry.powershell
-        .replace(/\s+/g, " ")
-        .replace(/\$bash/g, "$gitBash");
-      if (!normalized.startsWith("if ($env:GITHUB_ACTIONS -eq 'true' -or $null -ne $env:COPILOT_AGENT_PROMPT) { exit 0 };") ||
-          !normalized.includes("Get-Command bash.exe -All -CommandType Application") ||
-          !normalized.includes("Write-Error 'Firstmate Copilot primary sessions are unsupported on native Windows.") ||
-          !normalized.includes("exit 2") ||
-          !normalized.includes("& $gitBash.Source -c './bin/fm-copilot-hook.sh session-start'") ||
-          !normalized.endsWith("exit $LASTEXITCODE")) process.exit(1);
+    const windowsCatchAll = event === "preToolUse" && modes[index] === "pre-subagent";
+    if (windowsCatchAll) {
+      if (entry.matcher !== undefined ||
+          entry.powershell !== "node .\\bin\\fm-copilot-windows-pretool.mjs; exit $LASTEXITCODE") process.exit(1);
     } else if ("powershell" in entry) {
       process.exit(1);
     }
@@ -47,9 +40,9 @@ for (const [event, modes] of Object.entries(expected)) {
 }
 NODE
   then
-    fail "repository Copilot hook does not isolate Windows startup refusal from Bash-only policies"
+    fail "repository Copilot hook does not route every Windows tool through the blocking guard"
   fi
-  pass "repository Copilot hooks refuse Windows startup without exposing unverified policies"
+  pass "repository Copilot hooks route every Windows tool through the blocking guard"
 }
 
 test_live_process_shape_detects_copilot() {
@@ -131,42 +124,23 @@ SH
   pass "Copilot cloud-agent identity bypasses sessionStart, preToolUse, and agentStop guards"
 }
 
-test_native_windows_primary_startup_refuses_before_session_work() {
-  local dir fakebin out status=0
-  dir="$TMP_ROOT/windows-primary"
-  fakebin="$dir/fakebin"
-  make_hook_fixture "$dir"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/uname" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' MINGW64_NT-10.0
-SH
-  cat > "$dir/bin/fm-sessionstart-run.sh" <<SH
-#!/usr/bin/env bash
-touch '$dir/session-work-ran'
-SH
-  chmod +x "$fakebin/uname" "$dir/bin/fm-sessionstart-run.sh"
+test_native_windows_pretool_guard_denies_local_and_bypasses_cloud() {
+  local guard out status=0
+  guard="$ROOT/bin/fm-copilot-windows-pretool.mjs"
 
-  out=$(printf '{"source":"startup"}' \
-    | env -u COPILOT_AGENT_PROMPT PATH="$fakebin:$PATH" GITHUB_ACTIONS='' \
-      "$dir/bin/fm-copilot-hook.sh" session-start 2>&1) || status=$?
-  expect_code 2 "$status" "native-Windows Copilot primary startup"
-  assert_contains "$out" "unsupported on native Windows" \
-    "native-Windows Copilot primary refusal lacked the platform diagnosis"
-  assert_contains "$out" "macOS, Linux, or WSL" \
-    "native-Windows Copilot primary refusal lacked an actionable alternative"
-  assert_absent "$dir/session-work-ran" \
-    "native-Windows Copilot primary startup reached session work before refusal"
+  out=$(printf '{"toolName":"read_file","toolArgs":{"path":"README.md"}}' \
+    | env -u COPILOT_AGENT_PROMPT GITHUB_ACTIONS='' node "$guard") || status=$?
+  expect_code 2 "$status" "native-Windows Copilot primary arbitrary tool"
+  printf '%s' "$out" | node -e \
+    'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => { const d=JSON.parse(s); if (d.permissionDecision !== "deny" || !d.permissionDecisionReason.includes("unsupported on native Windows") || !d.permissionDecisionReason.includes("macOS, Linux, or WSL")) process.exit(1); });' \
+    || fail "native-Windows arbitrary tool denial was not an actionable Copilot decision: $out"
 
   status=0
-  out=$(printf '{"source":"startup"}' \
-    | PATH="$fakebin:$PATH" GITHUB_ACTIONS='' COPILOT_AGENT_PROMPT='cloud task' \
-      "$dir/bin/fm-copilot-hook.sh" session-start 2>&1) || status=$?
-  expect_code 0 "$status" "native-Windows Copilot cloud-agent startup"
+  out=$(printf '{"toolName":"read_file","toolArgs":{"path":"README.md"}}' \
+    | GITHUB_ACTIONS='' COPILOT_AGENT_PROMPT='cloud task' node "$guard" 2>&1) || status=$?
+  expect_code 0 "$status" "native-Windows Copilot cloud-agent arbitrary tool"
   [ -z "$out" ] || fail "native-Windows cloud-agent bypass emitted output: $out"
-  assert_absent "$dir/session-work-ran" \
-    "native-Windows cloud-agent bypass reached local session work"
-  pass "native-Windows local startup refuses while cloud-agent startup stays unrestricted"
+  pass "native-Windows arbitrary tools are denied while cloud-agent tools stay unrestricted"
 }
 
 test_local_primary_denies_task_tool() {
@@ -334,11 +308,11 @@ EOF
   pass "copilot preToolUse denials use native stdout decisions without python3"
 }
 
-test_repository_hook_refuses_native_windows_primary_startup
+test_repository_hook_routes_native_windows_tools_to_blocking_guard
 test_live_process_shape_detects_copilot
 test_github_actions_leaves_repository_hooks_inert
 test_cloud_agent_leaves_repository_hooks_inert
-test_native_windows_primary_startup_refuses_before_session_work
+test_native_windows_pretool_guard_denies_local_and_bypasses_cloud
 test_local_primary_denies_task_tool
 test_malformed_payloads_stay_inert
 test_session_start_becomes_additional_context_without_python

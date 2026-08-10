@@ -5,7 +5,6 @@
       {
         "type": "command",
         "bash": "bin/fm-copilot-hook.sh session-start",
-        "powershell": "if ($env:GITHUB_ACTIONS -eq 'true' -or $null -ne $env:COPILOT_AGENT_PROMPT) { exit 0 }; $bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path $_.Source -Parent) 'git.exe') } | Select-Object -First 1; if ($null -eq $bash) { Write-Error 'Firstmate Copilot primary sessions are unsupported on native Windows. Use macOS, Linux, or WSL; Windows Zellij support is a separate experimental backend.'; exit 2 }; & $bash.Source -c './bin/fm-copilot-hook.sh session-start'; exit $LASTEXITCODE",
         "cwd": ".",
         "timeoutSec": 180
       }
@@ -28,6 +27,7 @@
       {
         "type": "command",
         "bash": "bin/fm-copilot-hook.sh pre-subagent",
+        "powershell": "node .\\bin\\fm-copilot-windows-pretool.mjs; exit $LASTEXITCODE",
         "cwd": ".",
         "timeoutSec": 10
       }
