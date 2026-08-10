@@ -162,6 +162,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-copilot-hook-lib.sh
+. "$SCRIPT_DIR/fm-copilot-hook-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -627,40 +629,6 @@ remove_owned_exclude_path() {
   rm -f -- "$tmp"
 }
 
-resolve_copilot_exclude_path() {
-  local repo=$1 meta=$2 common common_real exclude exclude_dir exclude_dir_real
-  [ -n "$repo" ] && [ -d "$repo" ] || {
-    echo "REFUSED: cannot resolve Copilot worker hook exclusion repository for $meta" >&2
-    return 1
-  }
-  common=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
-  case "$common" in
-    /*) ;;
-    *) common="$repo/$common" ;;
-  esac
-  common_real=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd -P) || return 1
-  [ ! -L "$common_real/info" ] || {
-    echo "REFUSED: unsafe Copilot worker hook exclusion parent for $meta" >&2
-    return 1
-  }
-  exclude=$(git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null) || return 1
-  case "$exclude" in
-    /*) ;;
-    *) exclude="$repo/$exclude" ;;
-  esac
-  [ "${exclude##*/}" = exclude ] && [ ! -L "$exclude" ] || {
-    echo "REFUSED: unsafe Copilot worker hook exclusion path for $meta" >&2
-    return 1
-  }
-  exclude_dir=${exclude%/*}
-  exclude_dir_real=$(CDPATH='' cd -- "$exclude_dir" 2>/dev/null && pwd -P) || return 1
-  if [ "$exclude_dir_real" != "$common_real/info" ]; then
-    echo "REFUSED: Copilot worker hook exclusion escapes the recorded repository for $meta" >&2
-    return 1
-  fi
-  printf '%s\n' "$exclude_dir_real/exclude"
-}
-
 remove_recorded_copilot_hook() (
   local worktree=$1 project=$2 meta=$3 task_id=$4 rel expected_hash exclude_owned worktree_real
   local github hooks hooks_real hook actual_hash exclude lock repo
@@ -678,7 +646,7 @@ remove_recorded_copilot_hook() (
     [ "$exclude_owned" = 1 ] || return 0
     repo=$project
   fi
-  exclude=$(resolve_copilot_exclude_path "$repo" "$meta") || return 1
+  exclude=$(fm_copilot_resolve_exclude_path "$repo" "$meta") || return 1
   lock="$exclude.fm-copilot-hooks.lock"
   fm_lock_acquire_wait "$lock"
   trap 'fm_lock_release "$lock"' EXIT

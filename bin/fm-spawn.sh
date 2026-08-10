@@ -217,6 +217,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-copilot-hook-lib.sh
+. "$SCRIPT_DIR/fm-copilot-hook-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1252,6 +1254,16 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+powershell_single_quote() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+copilot_powershell_git_bash() {
+  local command
+  command=$(powershell_single_quote "$1")
+  printf "\$bash=Get-Command bash.exe -All -CommandType Application | Where-Object { Test-Path (Join-Path (Split-Path \$_.Source -Parent) 'git.exe') } | Select-Object -First 1; if (\$null -eq \$bash) { throw 'Git Bash bash.exe not found' }; & \$bash.Source -lc '%s'" "$command"
+}
+
 resolved_existing_dir() {
   local path=$1
   [ -d "$path" ] || { echo "error: firstmate home does not exist or is not a directory: $path" >&2; return 1; }
@@ -2055,12 +2067,8 @@ EOF
       ;;
     copilot*)
       copilot_hooks_dir=$(copilot_hook_parent "$WT") || exit 1
-      COPILOT_HOOK_EXCLUDE=$(git -C "$WT" rev-parse --git-path info/exclude)
-      [ -n "$COPILOT_HOOK_EXCLUDE" ] || {
-        echo "error: could not resolve info/exclude for Copilot worker hook" >&2
-        exit 1
-      }
-      mkdir -p "$(dirname "$COPILOT_HOOK_EXCLUDE")"
+      COPILOT_HOOK_EXCLUDE=$(fm_copilot_resolve_exclude_path \
+        "$WT" "Copilot worker spawn $ID" --create) || exit 1
       COPILOT_HOOK_LOCK="$COPILOT_HOOK_EXCLUDE.fm-copilot-hooks.lock"
       fm_lock_acquire_wait "$COPILOT_HOOK_LOCK"
       COPILOT_HOOK_LOCK_HELD=1
@@ -2069,7 +2077,10 @@ EOF
       j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
       j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
-      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\"}]}}"
+      ps_submit=$(json_escape "$(copilot_powershell_git_bash "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")")
+      ps_stop=$(json_escape "$(copilot_powershell_git_bash "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")")
+      ps_sessionend=$(json_escape "$(copilot_powershell_git_bash "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")")
+      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\",\"powershell\":\"$ps_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\",\"powershell\":\"$ps_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\",\"powershell\":\"$ps_sessionend\"}]}}"
       copilot_hook_index=0
       while :; do
         copilot_hook_rel=".github/hooks/fm-busy-state-$ID"

@@ -8,6 +8,35 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-copilot-harness)
 HOOK="$ROOT/bin/fm-copilot-hook.sh"
 
+test_repository_hook_has_native_windows_dispatch() {
+  if ! node - "$ROOT/.github/hooks/firstmate.json" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const expected = {
+  sessionStart: ["session-start"],
+  preToolUse: ["pre-arm", "pre-cd", "pre-subagent"],
+  agentStop: ["agent-stop"],
+};
+if (config.version !== 1 || typeof config.hooks !== "object") process.exit(1);
+for (const [event, modes] of Object.entries(expected)) {
+  const entries = config.hooks[event];
+  if (!Array.isArray(entries) || entries.length !== modes.length) process.exit(1);
+  entries.forEach((entry, index) => {
+    if (entry.type !== "command" || entry.cwd !== ".") process.exit(1);
+    if (entry.bash !== `bin/fm-copilot-hook.sh ${modes[index]}`) process.exit(1);
+    if (typeof entry.powershell !== "string") process.exit(1);
+    if (!entry.powershell.includes("Get-Command bash.exe -All -CommandType Application")) process.exit(1);
+    if (!entry.powershell.includes("git.exe")) process.exit(1);
+    if (!entry.powershell.endsWith(`-lc 'bin/fm-copilot-hook.sh ${modes[index]}'`)) process.exit(1);
+  });
+}
+NODE
+  then
+    fail "repository Copilot hook lacks equivalent Git Bash PowerShell dispatch"
+  fi
+  pass "repository Copilot hooks dispatch through Git Bash on Windows"
+}
+
 test_live_process_shape_detects_copilot() {
   local fakebin out pid
   fakebin=$(fm_fakebin "$TMP_ROOT/detect")
@@ -252,6 +281,7 @@ EOF
   pass "copilot preToolUse denials use native stdout decisions without python3"
 }
 
+test_repository_hook_has_native_windows_dispatch
 test_live_process_shape_detects_copilot
 test_github_actions_leaves_repository_hooks_inert
 test_cloud_agent_leaves_repository_hooks_inert

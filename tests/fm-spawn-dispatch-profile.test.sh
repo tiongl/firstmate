@@ -460,6 +460,18 @@ test_copilot_threads_model_effort_and_worker_hook() {
   hook="$WT_DIR/.github/hooks/fm-busy-state-$id-2.json"
   assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
   python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
+  node - "$hook" <<'NODE' || fail "copilot worker lifecycle hook lacks equivalent Git Bash PowerShell dispatch"
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+for (const event of ["userPromptSubmitted", "agentStop", "sessionEnd"]) {
+  const entries = config.hooks[event];
+  if (!Array.isArray(entries) || entries.length !== 1) process.exit(1);
+  const entry = entries[0];
+  if (entry.type !== "command" || typeof entry.bash !== "string" || typeof entry.powershell !== "string") process.exit(1);
+  if (!entry.powershell.includes("Get-Command bash.exe -All -CommandType Application")) process.exit(1);
+  if (!entry.powershell.includes("git.exe") || !entry.powershell.includes("-lc")) process.exit(1);
+}
+NODE
   [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-2.json" ] \
     || fail "copilot spawn did not record its exact worker lifecycle hook"
   hook_hash=$(grep '^copilot_hook_hash=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)
@@ -537,6 +549,55 @@ test_copilot_spawn_refuses_symlinked_hook_parent() {
   [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
     || fail "copilot spawn wrote through a symlinked hooks directory"
   pass "copilot spawn refuses symlinked hook parents"
+}
+
+test_copilot_spawn_refuses_symlinked_exclusion_paths() {
+  local rec id out status common info escaped hook
+  id=profile-copilot-symlink-info
+  rec=$(make_spawn_case profile-copilot-symlink-info copilot "$id")
+  read_case_record "$rec"
+  common=$(git -C "$WT_DIR" rev-parse --git-common-dir)
+  info="$common/info"
+  escaped="$CASE_DIR/escaped-info"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  mkdir -p "$escaped"
+  rm -rf "$info"
+  ln -s "$escaped" "$info"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked exclusion parent"
+  assert_contains "$out" "unsafe Copilot worker hook exclusion parent" \
+    "copilot spawn did not explain the unsafe exclusion parent"
+  assert_absent "$hook" "copilot spawn created a hook before validating its exclusion parent"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked exclusion parent"
+
+  id=profile-copilot-symlink-exclude
+  rec=$(make_spawn_case profile-copilot-symlink-exclude copilot "$id")
+  read_case_record "$rec"
+  common=$(git -C "$WT_DIR" rev-parse --git-common-dir)
+  info="$common/info"
+  escaped="$CASE_DIR/escaped-exclude"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  mkdir -p "$info"
+  printf 'repository-owned\n' > "$escaped"
+  rm -f "$info/exclude"
+  ln -s "$escaped" "$info/exclude"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked exclusion file"
+  assert_contains "$out" "unsafe Copilot worker hook exclusion path" \
+    "copilot spawn did not explain the unsafe exclusion file"
+  assert_absent "$hook" "copilot spawn created a hook before validating its exclusion file"
+  [ "$(cat "$escaped")" = repository-owned ] \
+    || fail "copilot spawn wrote through a symlinked exclusion file"
+  pass "copilot spawn validates exclusion containment before hook creation"
 }
 
 test_grok_threads_model_and_reasoning_effort() {
@@ -813,6 +874,7 @@ test_codex_omits_invalid_max_effort
 test_copilot_threads_model_effort_and_worker_hook
 test_copilot_spawn_cleans_hook_when_metadata_publication_fails
 test_copilot_spawn_refuses_symlinked_hook_parent
+test_copilot_spawn_refuses_symlinked_exclusion_paths
 test_grok_threads_model_and_reasoning_effort
 test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
