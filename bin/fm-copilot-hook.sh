@@ -21,6 +21,15 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=${1:-}
 
+case "$(uname -s 2>/dev/null || printf unknown)" in
+  MSYS*|MINGW*|CYGWIN*)
+    if [ "$MODE" = session-start ]; then
+      echo "error: Firstmate Copilot primary sessions are unsupported on native Windows because delegation policies are verified only for Unix-like Bash tool calls. Use macOS, Linux, or WSL; Windows Zellij support is a separate experimental backend." >&2
+      exit 2
+    fi
+    ;;
+esac
+
 json_object_payload() {  # <payload>
   local payload=$1
   command -v node >/dev/null 2>&1 || return 1

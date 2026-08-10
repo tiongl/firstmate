@@ -72,7 +72,8 @@ Claude Code uses a tracked Stop hook for tokenless watcher re-arm and rewake, Gr
 All three have verified turn-end guard paths when launched with their documented setup.
 Pick whichever one matches your subscription and workflow.
 
-GitHub Copilot CLI, Codex, and OpenCode are also verified and supported as primary harnesses.
+GitHub Copilot CLI is also verified and supported as a primary harness on macOS, Linux, and WSL.
+Codex and OpenCode are verified and supported as primary harnesses.
 Copilot uses native repository hooks and asynchronous shell-completion notifications, Codex uses bounded foreground checkpoints, and OpenCode uses a TUI plugin.
 
 ### Install and launch
@@ -110,6 +111,9 @@ FM_PI_HARNESS=pi-signed pi-signed
 ```sh
 copilot
 ```
+
+Copilot primary and worker sessions are supported only on Unix-like hosts, including WSL.
+Firstmate refuses native-Windows Copilot primary startup because its delegation policies are not verified for PowerShell; the experimental [Windows Zellij backend](docs/zellij-backend.md) remains a separate runtime lane.
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
 For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
