@@ -235,7 +235,7 @@ The checkpoint is deliberately foreground and bounded so Codex regains control r
 
 | Fact | Value |
 |---|---|
-| Busy state | Repository hooks `userPromptSubmitted`, `agentStop`, and `sessionEnd`, written into each worker's `.github/hooks/fm-busy-state.json`. |
+| Busy state | Repository hooks `userPromptSubmitted`, `agentStop`, and `sessionEnd`, written to the task-specific worker-owned path recorded as `copilot_hook` in that task's metadata. |
 | Exit command | `/exit` |
 | Interrupt | Press Escape twice. |
 | Skill invocation | Select through `/skills` or invoke by name in natural language. |

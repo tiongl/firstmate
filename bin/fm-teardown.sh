@@ -599,24 +599,70 @@ recorded_copilot_hook_path() {
   printf '%s\n' "$rel"
 }
 
-remove_recorded_copilot_hook() {
-  local worktree=$1 meta=$2 task_id=$3 rel worktree_real github hooks hooks_real
+copilot_hook_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+remove_owned_exclude_path() {
+  local exclude=$1 rel=$2 tmp
+  [ -f "$exclude" ] || return 0
+  tmp="$exclude.fm-copilot.$$"
+  awk -v target="$rel" '
+    !removed && $0 == target { removed=1; next }
+    { print }
+  ' "$exclude" > "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  cat "$tmp" > "$exclude" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  rm -f -- "$tmp"
+}
+
+remove_recorded_copilot_hook() (
+  local worktree=$1 meta=$2 task_id=$3 rel expected_hash exclude_owned worktree_real
+  local github hooks hooks_real hook actual_hash exclude lock
   rel=$(recorded_copilot_hook_path "$meta" "$task_id") || return 1
   [ -n "$rel" ] || return 0
   [ -d "$worktree" ] || return 0
+  expected_hash=$(meta_value "$meta" copilot_hook_hash)
+  exclude_owned=$(meta_value "$meta" copilot_hook_exclude_owned)
+  case "$exclude_owned" in ''|0|1) ;; *)
+    echo "REFUSED: invalid Copilot worker hook exclusion ownership in $meta" >&2
+    return 1
+  esac
   worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
+  exclude=$(git -C "$worktree" rev-parse --git-path info/exclude 2>/dev/null) || return 1
+  [ -n "$exclude" ] || return 1
+  lock="$exclude.fm-copilot-hooks.lock"
+  fm_lock_acquire_wait "$lock"
+  trap 'fm_lock_release "$lock"' EXIT
   github="$worktree/.github"
   hooks="$github/hooks"
   if [ -L "$github" ] || [ -L "$hooks" ]; then
     echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
     return 1
   fi
-  [ -e "$github" ] || return 0
+  if [ ! -e "$github" ]; then
+    [ "$exclude_owned" != 1 ] || remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
   if [ ! -d "$github" ]; then
     echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
     return 1
   fi
-  [ -e "$hooks" ] || return 0
+  if [ ! -e "$hooks" ]; then
+    [ "$exclude_owned" != 1 ] || remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
   if [ ! -d "$hooks" ]; then
     echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
     return 1
@@ -626,8 +672,40 @@ remove_recorded_copilot_hook() {
     echo "REFUSED: Copilot worker hook parent escapes the isolated worktree for $meta" >&2
     return 1
   fi
-  rm -f -- "$hooks_real/${rel##*/}"
-}
+  hook="$hooks_real/${rel##*/}"
+  if [ -e "$hook" ] || [ -L "$hook" ]; then
+    if [ -L "$hook" ] || [ ! -f "$hook" ]; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel is not a regular file" >&2
+      return 1
+    fi
+    if git -C "$worktree" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel is now tracked" >&2
+      return 1
+    fi
+    case "$expected_hash" in *[!0-9a-f]*|'') expected_hash= ;; esac
+    [ "${#expected_hash}" -eq 64 ] || expected_hash=
+    if [ -z "$expected_hash" ]; then
+      echo "REFUSED: missing Copilot worker hook ownership hash in $meta" >&2
+      return 1
+    fi
+    actual_hash=$(copilot_hook_sha256 "$hook") || {
+      echo "REFUSED: cannot verify Copilot worker hook ownership for $meta" >&2
+      return 1
+    }
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel contents differ" >&2
+      return 1
+    fi
+    rm -f -- "$hook" || {
+      return 1
+    }
+  fi
+  if [ "$exclude_owned" = 1 ]; then
+    remove_owned_exclude_path "$exclude" "$rel" || {
+      return 1
+    }
+  fi
+)
 
 require_orca_worktree_id() {
   local meta=$1 id

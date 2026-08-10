@@ -429,7 +429,7 @@ test_codex_omits_invalid_max_effort() {
 }
 
 test_copilot_threads_model_effort_and_worker_hook() {
-  local rec id out status launch hook canonical occupied
+  local rec id out status launch hook canonical occupied exclude hook_hash
   id=profile-copilot-z4b
   rec=$(make_spawn_case profile-copilot copilot "$id")
   read_case_record "$rec"
@@ -442,6 +442,8 @@ test_copilot_threads_model_effort_and_worker_hook() {
     ".github/hooks/fm-busy-state-$id.json"
   git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -qm 'add repository hook fixture'
+  exclude=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  printf '%s\n' ".github/hooks/fm-busy-state-$id-1.json" >> "$exclude"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --model gpt-5.6-sol --effort xhigh)
@@ -455,18 +457,31 @@ test_copilot_threads_model_effort_and_worker_hook() {
     || fail "copilot spawn overwrote the tracked repository hook"
   [ "$(cat "$occupied")" = '{"owned":"elsewhere"}' ] \
     || fail "copilot spawn overwrote a pre-existing worker hook path"
-  hook="$WT_DIR/.github/hooks/fm-busy-state-$id-1.json"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id-2.json"
   assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
   python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
-  [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-1.json" ] \
+  [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-2.json" ] \
     || fail "copilot spawn did not record its exact worker lifecycle hook"
+  hook_hash=$(grep '^copilot_hook_hash=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)
+  case "$hook_hash" in ''|*[!0-9a-f]*)
+    fail "copilot spawn did not record worker hook content ownership"
+    ;;
+  esac
+  [ "${#hook_hash}" -eq 64 ] \
+    || fail "copilot spawn recorded an invalid worker hook ownership hash"
+  grep -qxF 'copilot_hook_exclude_owned=1' "$HOME_DIR/state/$id.meta" \
+    || fail "copilot spawn did not record ownership of its ignore rule"
+  grep -qxF ".github/hooks/fm-busy-state-$id-1.json" "$exclude" \
+    || fail "copilot spawn removed a pre-existing shared ignore rule"
+  grep -qxF ".github/hooks/fm-busy-state-$id-2.json" "$exclude" \
+    || fail "copilot spawn did not hide its generated hook from git"
   assert_grep "state=busy source=fm-spawn" "$HOME_DIR/state/$id.busy-state" \
     "copilot spawn did not seed semantic busy state"
   pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
 }
 
 test_copilot_spawn_cleans_hook_when_metadata_publication_fails() {
-  local rec id out status hook
+  local rec id out status hook exclude
   id=profile-copilot-meta-fail
   rec=$(make_spawn_case profile-copilot-meta-fail copilot "$id")
   read_case_record "$rec"
@@ -480,6 +495,9 @@ test_copilot_spawn_cleans_hook_when_metadata_publication_fails() {
 
   [ "$status" -ne 0 ] || fail "copilot spawn succeeded when metadata publication failed"
   assert_absent "$hook" "failed copilot spawn left an unowned lifecycle hook active"
+  exclude=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  ! grep -qxF ".github/hooks/fm-busy-state-$id.json" "$exclude" \
+    || fail "failed copilot spawn left its owned ignore rule active"
   pass "copilot spawn removes its hook when metadata publication fails"
 }
 

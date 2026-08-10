@@ -633,6 +633,10 @@ CONFIG_INHERIT_LOCK_HELD=0
 COPILOT_HOOK_ABORT_CLEANUP=0
 COPILOT_HOOK_ABORT_WORKTREE=
 COPILOT_HOOK_ABORT_REL=
+COPILOT_HOOK_ABORT_HASH=
+COPILOT_HOOK_ABORT_EXCLUDE_OWNED=0
+COPILOT_HOOK_LOCK=
+COPILOT_HOOK_LOCK_HELD=0
 
 copilot_hook_parent() {
   local worktree=$1 worktree_real github hooks hooks_real
@@ -666,10 +670,46 @@ copilot_hook_parent() {
 }
 
 remove_spawn_copilot_hook() {
-  local worktree=$1 rel=$2 hooks_real
+  local worktree=$1 rel=$2 expected_hash=$3 hooks_real hook actual_hash
   [ -n "$worktree" ] && [ -n "$rel" ] || return 0
   hooks_real=$(copilot_hook_parent "$worktree") || return 1
-  rm -f -- "$hooks_real/${rel##*/}"
+  hook="$hooks_real/${rel##*/}"
+  [ -e "$hook" ] || return 0
+  if [ -z "$expected_hash" ] && [ "$COPILOT_HOOK_LOCK_HELD" = 1 ]; then
+    rm -f -- "$hook"
+    return
+  fi
+  actual_hash=$(copilot_hook_sha256 "$hook") || return 1
+  [ "$actual_hash" = "$expected_hash" ] || return 1
+  rm -f -- "$hook"
+}
+
+copilot_hook_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+remove_owned_exclude_path() {
+  local exclude=$1 rel=$2 tmp
+  [ -f "$exclude" ] || return 0
+  tmp="$exclude.fm-copilot.$$"
+  awk -v target="$rel" '
+    !removed && $0 == target { removed=1; next }
+    { print }
+  ' "$exclude" > "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  cat "$tmp" > "$exclude" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  rm -f -- "$tmp"
 }
 
 parse_orca_worktree_result() {
@@ -693,7 +733,21 @@ spawn_abort_cleanup() {
   local status=$?
   if [ "$COPILOT_HOOK_ABORT_CLEANUP" = 1 ]; then
     COPILOT_HOOK_ABORT_CLEANUP=0
-    remove_spawn_copilot_hook "$COPILOT_HOOK_ABORT_WORKTREE" "$COPILOT_HOOK_ABORT_REL" || true
+    if [ "$COPILOT_HOOK_LOCK_HELD" != 1 ] && [ -n "$COPILOT_HOOK_LOCK" ]; then
+      fm_lock_acquire_wait "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=1
+    fi
+    remove_spawn_copilot_hook \
+      "$COPILOT_HOOK_ABORT_WORKTREE" \
+      "$COPILOT_HOOK_ABORT_REL" \
+      "$COPILOT_HOOK_ABORT_HASH" || true
+    if [ "$COPILOT_HOOK_ABORT_EXCLUDE_OWNED" = 1 ]; then
+      remove_owned_exclude_path "$COPILOT_HOOK_EXCLUDE" "$COPILOT_HOOK_ABORT_REL" || true
+    fi
+  fi
+  if [ "$COPILOT_HOOK_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$COPILOT_HOOK_LOCK"
+    COPILOT_HOOK_LOCK_HELD=0
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
@@ -2001,6 +2055,15 @@ EOF
       ;;
     copilot*)
       copilot_hooks_dir=$(copilot_hook_parent "$WT") || exit 1
+      COPILOT_HOOK_EXCLUDE=$(git -C "$WT" rev-parse --git-path info/exclude)
+      [ -n "$COPILOT_HOOK_EXCLUDE" ] || {
+        echo "error: could not resolve info/exclude for Copilot worker hook" >&2
+        exit 1
+      }
+      mkdir -p "$(dirname "$COPILOT_HOOK_EXCLUDE")"
+      COPILOT_HOOK_LOCK="$COPILOT_HOOK_EXCLUDE.fm-copilot-hooks.lock"
+      fm_lock_acquire_wait "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=1
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source copilot-hook"
       j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
@@ -2012,10 +2075,22 @@ EOF
         copilot_hook_rel=".github/hooks/fm-busy-state-$ID"
         [ "$copilot_hook_index" -eq 0 ] || copilot_hook_rel="$copilot_hook_rel-$copilot_hook_index"
         copilot_hook_rel="$copilot_hook_rel.json"
+        if grep -qxF "$copilot_hook_rel" "$COPILOT_HOOK_EXCLUDE" 2>/dev/null; then
+          copilot_hook_index=$((copilot_hook_index + 1))
+          if [ "$copilot_hook_index" -gt 100 ]; then
+            echo "error: could not allocate a worker-owned Copilot hook path for $ID" >&2
+            exit 1
+          fi
+          continue
+        fi
         if (set -C; printf '%s\n' "$copilot_hook_json" > "$copilot_hooks_dir/${copilot_hook_rel##*/}") 2>/dev/null; then
           COPILOT_HOOK_ABORT_WORKTREE=$WT
           COPILOT_HOOK_ABORT_REL=$copilot_hook_rel
           COPILOT_HOOK_ABORT_CLEANUP=1
+          COPILOT_HOOK_ABORT_HASH=$(copilot_hook_sha256 "$copilot_hooks_dir/${copilot_hook_rel##*/}") || {
+            echo "error: could not hash Copilot worker hook for ownership" >&2
+            exit 1
+          }
           break
         fi
         copilot_hook_index=$((copilot_hook_index + 1))
@@ -2024,7 +2099,11 @@ EOF
           exit 1
         fi
       done
-      exclude_path "$copilot_hook_rel"
+      copilot_hook_exclude_owned=1
+      COPILOT_HOOK_ABORT_EXCLUDE_OWNED=1
+      echo "$copilot_hook_rel" >> "$COPILOT_HOOK_EXCLUDE"
+      fm_lock_release "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=0
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -2277,6 +2356,8 @@ META_WINDOW=$T
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   [ -z "${copilot_hook_rel:-}" ] || echo "copilot_hook=$copilot_hook_rel"
+  [ -z "${copilot_hook_rel:-}" ] || echo "copilot_hook_hash=$COPILOT_HOOK_ABORT_HASH"
+  [ "${copilot_hook_exclude_owned:-0}" = 1 ] && echo "copilot_hook_exclude_owned=1"
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
