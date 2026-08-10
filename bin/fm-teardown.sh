@@ -162,6 +162,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-copilot-hook-lib.sh
+. "$SCRIPT_DIR/fm-copilot-hook-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -570,6 +572,150 @@ meta_value() {
   local meta=$1 key=$2
   fm_meta_get "$meta" "$key"
 }
+
+recorded_copilot_hook_path() {
+  local meta=$1 task_id=$2 rel base index
+  rel=$(meta_value "$meta" copilot_hook)
+  [ -n "$rel" ] || return 0
+  base=".github/hooks/fm-busy-state-$task_id"
+  if [ "$rel" = "$base.json" ]; then
+    printf '%s\n' "$rel"
+    return 0
+  fi
+  index=${rel#"$base-"}
+  if [ "$index" = "$rel" ] || [ "${index%.json}" = "$index" ]; then
+    echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+    return 1
+  fi
+  index=${index%.json}
+  case "$index" in
+    ''|0|0*|*[!0-9]*)
+      echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+      return 1
+      ;;
+  esac
+  if [ "${#index}" -gt 3 ] || [ "$index" -gt 100 ]; then
+    echo "REFUSED: unsafe Copilot worker hook path in $meta: $rel" >&2
+    return 1
+  fi
+  printf '%s\n' "$rel"
+}
+
+copilot_hook_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+remove_owned_exclude_path() {
+  local exclude=$1 rel=$2 tmp
+  [ -f "$exclude" ] || return 0
+  tmp="$exclude.fm-copilot.$$"
+  awk -v target="$rel" '
+    !removed && $0 == target { removed=1; next }
+    { print }
+  ' "$exclude" > "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  cat "$tmp" > "$exclude" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  rm -f -- "$tmp"
+}
+
+remove_recorded_copilot_hook() (
+  local worktree=$1 project=$2 meta=$3 task_id=$4 rel expected_hash exclude_owned worktree_real
+  local github hooks hooks_real hook actual_hash exclude lock repo
+  rel=$(recorded_copilot_hook_path "$meta" "$task_id") || return 1
+  [ -n "$rel" ] || return 0
+  expected_hash=$(meta_value "$meta" copilot_hook_hash)
+  exclude_owned=$(meta_value "$meta" copilot_hook_exclude_owned)
+  case "$exclude_owned" in ''|0|1) ;; *)
+    echo "REFUSED: invalid Copilot worker hook exclusion ownership in $meta" >&2
+    return 1
+  esac
+  if [ -d "$worktree" ]; then
+    repo=$worktree
+  else
+    [ "$exclude_owned" = 1 ] || return 0
+    repo=$project
+  fi
+  exclude=$(fm_copilot_resolve_exclude_path "$repo" "$meta") || return 1
+  lock="$exclude.fm-copilot-hooks.lock"
+  fm_lock_acquire_wait "$lock"
+  trap 'fm_lock_release "$lock"' EXIT
+  if [ ! -d "$worktree" ]; then
+    remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
+  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
+  github="$worktree/.github"
+  hooks="$github/hooks"
+  if [ -L "$github" ] || [ -L "$hooks" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  if [ ! -e "$github" ]; then
+    [ "$exclude_owned" != 1 ] || remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
+  if [ ! -d "$github" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  if [ ! -e "$hooks" ]; then
+    [ "$exclude_owned" != 1 ] || remove_owned_exclude_path "$exclude" "$rel"
+    return
+  fi
+  if [ ! -d "$hooks" ]; then
+    echo "REFUSED: unsafe Copilot worker hook parent for $meta" >&2
+    return 1
+  fi
+  hooks_real=$(CDPATH='' cd -- "$hooks" 2>/dev/null && pwd -P) || return 1
+  if [ "$hooks_real" != "$worktree_real/.github/hooks" ]; then
+    echo "REFUSED: Copilot worker hook parent escapes the isolated worktree for $meta" >&2
+    return 1
+  fi
+  hook="$hooks_real/${rel##*/}"
+  if [ -e "$hook" ] || [ -L "$hook" ]; then
+    if [ -L "$hook" ] || [ ! -f "$hook" ]; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel is not a regular file" >&2
+      return 1
+    fi
+    if git -C "$worktree" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel is now tracked" >&2
+      return 1
+    fi
+    case "$expected_hash" in *[!0-9a-f]*|'') expected_hash= ;; esac
+    [ "${#expected_hash}" -eq 64 ] || expected_hash=
+    if [ -z "$expected_hash" ]; then
+      echo "REFUSED: missing Copilot worker hook ownership hash in $meta" >&2
+      return 1
+    fi
+    actual_hash=$(copilot_hook_sha256 "$hook") || {
+      echo "REFUSED: cannot verify Copilot worker hook ownership for $meta" >&2
+      return 1
+    }
+    if [ "$actual_hash" != "$expected_hash" ]; then
+      echo "REFUSED: Copilot worker hook ownership changed for $meta: $rel contents differ" >&2
+      return 1
+    fi
+    rm -f -- "$hook" || {
+      return 1
+    }
+  fi
+  if [ "$exclude_owned" = 1 ]; then
+    remove_owned_exclude_path "$exclude" "$rel" || {
+      return 1
+    }
+  fi
+)
 
 require_orca_worktree_id() {
   local meta=$1 id
@@ -1987,6 +2133,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
     [ -e "$child_meta" ] || continue
     child_id=$(basename "$child_meta" .meta)
     fm_backend_validate_task_endpoint "$child_meta" "$child_id" || return 1
+    recorded_copilot_hook_path "$child_meta" "$child_id" >/dev/null || return 1
     child_backend=$FM_BACKEND_VALIDATED_BACKEND
     child_target=$FM_BACKEND_VALIDATED_TARGET
     if [ "$child_backend" = herdr ]; then
@@ -2045,6 +2192,9 @@ cleanup_firstmate_home_children() {
       else
         fm_backend_kill "$child_backend" "$child_t" "$(meta_value "$child_meta" zellij_tab_id)" "fm-$child_id" 2>/dev/null || true
       fi
+    fi
+    if [ "$child_kind" != secondmate ]; then
+      remove_recorded_copilot_hook "$child_wt" "$child_proj" "$child_meta" "$child_id" || return 1
     fi
     if [ "$child_kind" = secondmate ]; then
       child_home=$(meta_value "$child_meta" home)
@@ -2107,6 +2257,7 @@ remove_secondmate_registry_entry() {
 }
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+recorded_copilot_hook_path "$META" "$ID" >/dev/null || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
@@ -2234,6 +2385,9 @@ if [ "$BACKEND" = herdr ]; then
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
+if [ "$KIND" != secondmate ]; then
+  remove_recorded_copilot_hook "$WT" "$PROJ" "$META" "$ID" || exit 1
+fi
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1

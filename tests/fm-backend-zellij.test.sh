@@ -47,10 +47,17 @@ if [ "${1:-}" = --version ]; then
   exit 0
 fi
 if [ "${1:-}" = list-sessions ]; then
+  if [ -n "${FM_ZELLIJ_SESSION_READY_FILE:-}" ] && [ -f "$FM_ZELLIJ_SESSION_READY_FILE" ]; then
+    printf '%s\n' "${FM_ZELLIJ_SESSION_AFTER_ATTACH:-}"
+    exit 0
+  fi
   printf '%s\n' "${FM_ZELLIJ_SESSION_LIST:-}"
   exit 0
 fi
 if [ "${1:-}" = attach ]; then
+  if [ "${FM_ZELLIJ_ATTACH_EXIT:-0}" -ne 0 ] && [ -n "${FM_ZELLIJ_SESSION_READY_FILE:-}" ]; then
+    : > "$FM_ZELLIJ_SESSION_READY_FILE"
+  fi
   exit "${FM_ZELLIJ_ATTACH_EXIT:-0}"
 fi
 
@@ -417,6 +424,19 @@ test_session_exists_false_when_absent() {
   pass "fm_backend_zellij_session_exists: false when the session name is not listed"
 }
 
+test_session_exists_false_when_exited() {
+  local dir fb out status
+  dir="$TMP_ROOT/exists-exited"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='firstmate [Created 1s ago] (EXITED - attach to resurrect)' \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_session_exists firstmate' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "session_exists should report false for an EXITED session"
+  [ -z "$out" ] || fail "session_exists should stay silent for an EXITED session, got '$out'"
+  pass "fm_backend_zellij_session_exists: false when the session is EXITED"
+}
+
 test_server_ensure_skips_attach_when_already_exists() {
   local dir fb
   dir="$TMP_ROOT/server-reuse"; mkdir -p "$dir/responses"
@@ -427,6 +447,33 @@ test_server_ensure_skips_attach_when_already_exists() {
   expect_code 0 $? "server_ensure should succeed immediately when the session already exists"
   assert_not_contains "$(cat "$dir/log")" $'\x1f''attach' "server_ensure should not call attach when the session already exists"
   pass "fm_backend_zellij_server_ensure: reuses an existing session without calling attach"
+}
+
+test_server_ensure_accepts_concurrent_creator() {
+  local dir fb
+  dir="$TMP_ROOT/server-concurrent-create"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='' FM_ZELLIJ_ATTACH_EXIT=1 \
+    FM_ZELLIJ_SESSION_READY_FILE="$dir/session-ready" \
+    FM_ZELLIJ_SESSION_AFTER_ATTACH='firstmate' \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_server_ensure firstmate' "$ROOT"
+  expect_code 0 $? "server_ensure should accept a healthy session created concurrently"
+  [ "$(grep -c $'\x1f''attach' "$dir/log")" -eq 1 ] \
+    || fail "server_ensure should attempt session creation exactly once"
+  pass "fm_backend_zellij_server_ensure: accepts a concurrent creator's healthy session"
+}
+
+test_server_ensure_preserves_attach_failure() {
+  local dir fb status
+  dir="$TMP_ROOT/server-attach-failure"; mkdir -p "$dir/responses"
+  fb=$(make_zellij_fakebin "$dir")
+  PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST='' FM_ZELLIJ_ATTACH_EXIT=1 \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_server_ensure firstmate' "$ROOT"
+  status=$?
+  [ "$status" -ne 0 ] || fail "server_ensure should preserve attach failure when no session appeared"
+  pass "fm_backend_zellij_server_ensure: preserves attach failure without a concurrent session"
 }
 
 # --- dispatch wiring (fm-backend.sh) ------------------------------------------
@@ -481,6 +528,22 @@ test_create_task_creates_and_parses_ids() {
   assert_contains "$(cat "$dir/log")" $'\x1f''new-tab'$'\x1f''--cwd'$'\x1f''/tmp/proj'$'\x1f''--name'$'\x1f'"$title" \
     "create_task did not call new-tab with the right cwd/home-scoped name"
   pass "fm_backend_zellij_create_task: creates a home-scoped tab and parses tab_id/pane_id from the response"
+}
+
+test_create_task_resolves_silent_new_tab() {
+  local dir fb out title
+  dir="$TMP_ROOT/create-task-silent"; mkdir -p "$dir/responses"
+  title=$(zellij_expected_scoped_title fm-silent)
+  printf '[]\n' > "$dir/responses/1.out"
+  # Native Windows Zellij creates the tab but emits no id from new-tab.
+  printf '[{"tab_id":6,"name":"%s","active":true}]\n' "$title" > "$dir/responses/3.out"
+  printf '[{"id":12,"tab_id":6,"is_plugin":false}]\n' > "$dir/responses/4.out"
+  fb=$(make_zellij_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
+    FM_ZELLIJ_SESSION_LIST="firstmate" \
+    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_create_task firstmate fm-silent /tmp/proj' "$ROOT" )
+  [ "$out" = "6 12" ] || fail "create_task should resolve a silently created tab by its unique title, got '$out'"
+  pass "fm_backend_zellij_create_task: resolves a silent native-Windows new-tab from live state"
 }
 
 test_create_task_restores_previously_active_tab() {
@@ -1085,11 +1148,15 @@ test_resolve_bare_selector_prefers_later_session_scoped_title_over_legacy
 test_resolve_bare_selector_refuses_cross_session_ambiguous_untagged
 test_session_exists_true_when_listed
 test_session_exists_false_when_absent
+test_session_exists_false_when_exited
 test_server_ensure_skips_attach_when_already_exists
+test_server_ensure_accepts_concurrent_creator
+test_server_ensure_preserves_attach_failure
 test_dispatch_routes_zellij_backend
 test_dispatch_busy_state_unknown_for_zellij
 test_create_task_refuses_duplicate_label
 test_create_task_creates_and_parses_ids
+test_create_task_resolves_silent_new_tab
 test_create_task_restores_previously_active_tab
 test_create_task_no_restore_when_new_tab_was_already_active
 test_capture_small_reads_use_viewport_and_trim

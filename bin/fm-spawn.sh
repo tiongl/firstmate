@@ -86,7 +86,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|copilot|opencode|pi|pi-signed|grok|kimi|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. pi-signed launches that exact executable name from PATH and
@@ -217,6 +217,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-copilot-hook-lib.sh
+. "$SCRIPT_DIR/fm-copilot-hook-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -382,7 +384,7 @@ spawn_remote_secondmate() {
     harness=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
   fi
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|copilot|opencode|pi|pi-signed|grok|kimi) ;;
     *)
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -630,6 +632,87 @@ SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+COPILOT_HOOK_ABORT_CLEANUP=0
+COPILOT_HOOK_ABORT_WORKTREE=
+COPILOT_HOOK_ABORT_REL=
+COPILOT_HOOK_ABORT_HASH=
+COPILOT_HOOK_ABORT_EXCLUDE_OWNED=0
+COPILOT_HOOK_LOCK=
+COPILOT_HOOK_LOCK_HELD=0
+
+copilot_hook_parent() {
+  local worktree=$1 worktree_real github hooks hooks_real
+  worktree_real=$(CDPATH='' cd -- "$worktree" 2>/dev/null && pwd -P) || return 1
+  github="$worktree/.github"
+  hooks="$github/hooks"
+  if [ -L "$github" ] || { [ -e "$github" ] && [ ! -d "$github" ]; }; then
+    echo "error: refusing unsafe Copilot hook parent: $github" >&2
+    return 1
+  fi
+  mkdir -p "$github" || return 1
+  if [ -L "$github" ] || [ ! -d "$github" ]; then
+    echo "error: refusing unsafe Copilot hook parent: $github" >&2
+    return 1
+  fi
+  if [ -L "$hooks" ] || { [ -e "$hooks" ] && [ ! -d "$hooks" ]; }; then
+    echo "error: refusing unsafe Copilot hook parent: $hooks" >&2
+    return 1
+  fi
+  mkdir -p "$hooks" || return 1
+  if [ -L "$github" ] || [ -L "$hooks" ] || [ ! -d "$hooks" ]; then
+    echo "error: refusing unsafe Copilot hook parent: $hooks" >&2
+    return 1
+  fi
+  hooks_real=$(CDPATH='' cd -- "$hooks" 2>/dev/null && pwd -P) || return 1
+  if [ "$hooks_real" != "$worktree_real/.github/hooks" ]; then
+    echo "error: Copilot hook parent escapes the isolated worktree: $hooks" >&2
+    return 1
+  fi
+  printf '%s\n' "$hooks_real"
+}
+
+remove_spawn_copilot_hook() {
+  local worktree=$1 rel=$2 expected_hash=$3 hooks_real hook actual_hash
+  [ -n "$worktree" ] && [ -n "$rel" ] || return 0
+  hooks_real=$(copilot_hook_parent "$worktree") || return 1
+  hook="$hooks_real/${rel##*/}"
+  [ -e "$hook" ] || return 0
+  if [ -z "$expected_hash" ] && [ "$COPILOT_HOOK_LOCK_HELD" = 1 ]; then
+    rm -f -- "$hook"
+    return
+  fi
+  actual_hash=$(copilot_hook_sha256 "$hook") || return 1
+  [ "$actual_hash" = "$expected_hash" ] || return 1
+  rm -f -- "$hook"
+}
+
+copilot_hook_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+remove_owned_exclude_path() {
+  local exclude=$1 rel=$2 tmp
+  [ -f "$exclude" ] || return 0
+  tmp="$exclude.fm-copilot.$$"
+  awk -v target="$rel" '
+    !removed && $0 == target { removed=1; next }
+    { print }
+  ' "$exclude" > "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  cat "$tmp" > "$exclude" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  rm -f -- "$tmp"
+}
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -650,6 +733,24 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  if [ "$COPILOT_HOOK_ABORT_CLEANUP" = 1 ]; then
+    COPILOT_HOOK_ABORT_CLEANUP=0
+    if [ "$COPILOT_HOOK_LOCK_HELD" != 1 ] && [ -n "$COPILOT_HOOK_LOCK" ]; then
+      fm_lock_acquire_wait "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=1
+    fi
+    remove_spawn_copilot_hook \
+      "$COPILOT_HOOK_ABORT_WORKTREE" \
+      "$COPILOT_HOOK_ABORT_REL" \
+      "$COPILOT_HOOK_ABORT_HASH" || true
+    if [ "$COPILOT_HOOK_ABORT_EXCLUDE_OWNED" = 1 ]; then
+      remove_owned_exclude_path "$COPILOT_HOOK_EXCLUDE" "$COPILOT_HOOK_ABORT_REL" || true
+    fi
+  fi
+  if [ "$COPILOT_HOOK_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$COPILOT_HOOK_LOCK"
+    COPILOT_HOOK_LOCK_HELD=0
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -789,7 +890,7 @@ FIRSTMATE_HOME=
 
 if [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    ''|claude|codex|copilot|opencode|pi|pi-signed|grok|kimi|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -834,6 +935,7 @@ launch_template() {
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
+    copilot) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS copilot --yolo --autopilot __MODELFLAG____EFFORTFLAG__-i "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
       if [ "$kind" = secondmate ]; then
@@ -930,6 +1032,15 @@ esac
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
+fi
+
+if [ "$HARNESS" = copilot ]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MSYS*|MINGW*|CYGWIN*)
+      echo "error: Copilot workers are unsupported on native Windows because Firstmate's delegation policies are verified only for Bash tool calls; Windows Zellij support is a separate experimental backend" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # pi-signed is an explicitly selected executable identity, not an alias that may
@@ -1049,7 +1160,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    claude|codex|copilot|opencode|pi|pi-signed|grok|kimi|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1070,6 +1181,11 @@ effort_flag_for_harness() {
       # than passing an unsupported value.
       case "$effort" in
         low|medium|high|xhigh) printf -- '-c %s ' "$(shell_quote "model_reasoning_effort=\"$effort\"")" ;;
+      esac
+      ;;
+    copilot)
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
     grok)
@@ -1908,7 +2024,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed)
+    claude*|copilot*|opencode*|pi|pi-signed)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -1947,6 +2063,54 @@ if [ "$KIND" != secondmate ]; then
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
+      ;;
+    copilot*)
+      copilot_hooks_dir=$(copilot_hook_parent "$WT") || exit 1
+      COPILOT_HOOK_EXCLUDE=$(fm_copilot_resolve_exclude_path \
+        "$WT" "Copilot worker spawn $ID" --create) || exit 1
+      COPILOT_HOOK_LOCK="$COPILOT_HOOK_EXCLUDE.fm-copilot-hooks.lock"
+      fm_lock_acquire_wait "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=1
+      busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
+      busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source copilot-hook"
+      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submitted 2>/dev/null || true")
+      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event agent-stop 2>/dev/null || true")
+      j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      copilot_hook_json="{\"version\":1,\"hooks\":{\"userPromptSubmitted\":[{\"type\":\"command\",\"bash\":\"$j_submit\"}],\"agentStop\":[{\"type\":\"command\",\"bash\":\"$j_stop\"}],\"sessionEnd\":[{\"type\":\"command\",\"bash\":\"$j_sessionend\"}]}}"
+      copilot_hook_index=0
+      while :; do
+        copilot_hook_rel=".github/hooks/fm-busy-state-$ID"
+        [ "$copilot_hook_index" -eq 0 ] || copilot_hook_rel="$copilot_hook_rel-$copilot_hook_index"
+        copilot_hook_rel="$copilot_hook_rel.json"
+        if grep -qxF "$copilot_hook_rel" "$COPILOT_HOOK_EXCLUDE" 2>/dev/null; then
+          copilot_hook_index=$((copilot_hook_index + 1))
+          if [ "$copilot_hook_index" -gt 100 ]; then
+            echo "error: could not allocate a worker-owned Copilot hook path for $ID" >&2
+            exit 1
+          fi
+          continue
+        fi
+        if (set -C; printf '%s\n' "$copilot_hook_json" > "$copilot_hooks_dir/${copilot_hook_rel##*/}") 2>/dev/null; then
+          COPILOT_HOOK_ABORT_WORKTREE=$WT
+          COPILOT_HOOK_ABORT_REL=$copilot_hook_rel
+          COPILOT_HOOK_ABORT_CLEANUP=1
+          COPILOT_HOOK_ABORT_HASH=$(copilot_hook_sha256 "$copilot_hooks_dir/${copilot_hook_rel##*/}") || {
+            echo "error: could not hash Copilot worker hook for ownership" >&2
+            exit 1
+          }
+          break
+        fi
+        copilot_hook_index=$((copilot_hook_index + 1))
+        if [ "$copilot_hook_index" -gt 100 ]; then
+          echo "error: could not allocate a worker-owned Copilot hook path for $ID" >&2
+          exit 1
+        fi
+      done
+      copilot_hook_exclude_owned=1
+      COPILOT_HOOK_ABORT_EXCLUDE_OWNED=1
+      echo "$copilot_hook_rel" >> "$COPILOT_HOOK_EXCLUDE"
+      fm_lock_release "$COPILOT_HOOK_LOCK"
+      COPILOT_HOOK_LOCK_HELD=0
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -2198,6 +2362,9 @@ META_WINDOW=$T
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
+  [ -z "${copilot_hook_rel:-}" ] || echo "copilot_hook=$copilot_hook_rel"
+  [ -z "${copilot_hook_rel:-}" ] || echo "copilot_hook_hash=$COPILOT_HOOK_ABORT_HASH"
+  [ "${copilot_hook_exclude_owned:-0}" = 1 ] && echo "copilot_hook_exclude_owned=1"
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -2227,6 +2394,7 @@ META_WINDOW=$T
     echo "projects=$SECONDMATE_PROJECTS"
   fi
 } > "$STATE/$ID.meta"
+[ -z "${copilot_hook_rel:-}" ] || COPILOT_HOOK_ABORT_CLEANUP=0
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

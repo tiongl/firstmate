@@ -544,7 +544,10 @@ The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch
 
 ## Zellij
 
-The current compatibility floor and latest verification are Zellij 0.44.0 with `jq` on macOS aarch64.
+The current compatibility floor is Zellij 0.44.0, and CI pins Zellij 0.44.3.
+The latest complete lifecycle verification remains macOS aarch64 with `jq`.
+The native Windows Git Bash discovery lane remains non-blocking because detached server lifetime is not yet reliable.
+That lane uploads the smoke transcript and Zellij server logs on every run.
 All real tests use a uniquely named session and `tests/zellij-test-safety.sh`; they never touch a session named `firstmate` or call all-session deletion.
 
 | Guarantee | Command shape | Result |

@@ -58,7 +58,7 @@ Full detail on every feature lives in [docs/architecture.md](docs/architecture.m
 
 ### Requirements
 
-- A verified primary agent harness: Claude Code, Grok, Pi, `pi-signed`, Codex, or OpenCode.
+- A verified primary agent harness: Claude Code, GitHub Copilot CLI, Grok, Pi, `pi-signed`, Codex, or OpenCode.
 - Git and the GitHub CLI, authenticated through `gh auth login`.
 - The CLI and dependencies for your selected runtime backend; tmux is the reference default.
 
@@ -72,7 +72,9 @@ Claude Code uses a tracked Stop hook for tokenless watcher re-arm and rewake, Gr
 All three have verified turn-end guard paths when launched with their documented setup.
 Pick whichever one matches your subscription and workflow.
 
-Codex and OpenCode are also verified and supported as primary harnesses; Codex uses bounded foreground checkpoints, and OpenCode uses a TUI plugin, so both carry more harness-specific supervision tradeoffs than the three co-primaries.
+GitHub Copilot CLI is also verified and supported as a primary harness on macOS, Linux, and WSL.
+Codex and OpenCode are verified and supported as primary harnesses.
+Copilot uses native repository hooks and asynchronous shell-completion notifications, Codex uses bounded foreground checkpoints, and OpenCode uses a TUI plugin.
 
 ### Install and launch
 
@@ -103,6 +105,16 @@ pi
 # or, when the signed wrapper is installed
 FM_PI_HARNESS=pi-signed pi-signed
 ```
+
+**GitHub Copilot CLI**
+
+```sh
+copilot
+```
+
+Copilot primary and worker sessions are supported only on Unix-like hosts, including WSL.
+Firstmate denies every native-Windows Copilot primary tool call because its delegation policies are not verified for PowerShell; use macOS, Linux, or WSL instead.
+The experimental [Windows Zellij backend](docs/zellij-backend.md) remains a separate runtime lane.
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
 For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
@@ -211,7 +223,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/gitlab-merge-watch.md](docs/gitlab-merge-watch.md) - maintainer verification for GitLab merge watching on arbitrary instances.
 - [docs/turnend-guard.md](docs/turnend-guard.md) - the primary session's current "no turn ends blind" backstop, scope, loop safety, and compatibility limits.
 - [docs/verification/supervision.md](docs/verification/supervision.md) - active maintainer verification for session-start, guard, continuity, and wedge integrations.
-- [docs/supervision-protocols/](docs/supervision-protocols/) - rendered primary-harness watcher protocols for Claude, Codex, OpenCode, Pi and `pi-signed`, Grok, and unknown harness fallback.
+- [docs/supervision-protocols/](docs/supervision-protocols/) - rendered primary-harness watcher protocols for Claude, GitHub Copilot CLI, Codex, OpenCode, Pi and `pi-signed`, Grok, and unknown harness fallback.
 - [docs/scripts.md](docs/scripts.md) - the `bin/` toolbelt reference.
 - [docs/documentation-audiences.md](docs/documentation-audiences.md) - documentation audiences and the machine-checked placement boundary.
 - [`AGENTS.md`](AGENTS.md) - the distro's always-loaded operating contract and routing index for conditional procedures.

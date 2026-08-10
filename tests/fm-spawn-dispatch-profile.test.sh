@@ -14,8 +14,21 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
 make_spawn_fakebin() {
-  local dir=$1 fakebin
+  local dir=$1 fakebin real_git
   fakebin=$(fm_fakebin "$dir")
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+if [ "\${FM_TEST_FAIL_COPILOT_META:-0}" = 1 ] \
+   && [ "\${1:-}" = -C ] \
+   && [ "\${3:-}" = rev-parse ] \
+   && [ "\${4:-}" = --git-path ] \
+   && [ "\${5:-}" = info/exclude ]; then
+  mkdir -p "\${FM_TEST_FAIL_COPILOT_META_PATH:?}"
+fi
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -415,6 +428,203 @@ test_codex_omits_invalid_max_effort() {
   pass "codex omits unsupported max effort instead of passing a bad config value"
 }
 
+test_copilot_threads_model_effort_and_worker_hook() {
+  local rec id out status launch hook canonical occupied exclude hook_hash
+  id=profile-copilot-z4b
+  rec=$(make_spawn_case profile-copilot copilot "$id")
+  read_case_record "$rec"
+  mkdir -p "$WT_DIR/.github/hooks"
+  canonical="$WT_DIR/.github/hooks/fm-busy-state.json"
+  occupied="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  printf '%s\n' '{"version":1,"hooks":{"sessionStart":[]}}' > "$canonical"
+  printf '%s\n' '{"owned":"elsewhere"}' > "$occupied"
+  git -C "$WT_DIR" add .github/hooks/fm-busy-state.json \
+    ".github/hooks/fm-busy-state-$id.json"
+  git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm 'add repository hook fixture'
+  exclude=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  printf '%s\n' ".github/hooks/fm-busy-state-$id-1.json" >> "$exclude"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --model gpt-5.6-sol --effort xhigh)
+  status=$?
+  expect_code 0 "$status" "copilot spawn with profile flags should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" copilot gpt-5.6-sol xhigh
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "copilot --yolo --autopilot --model 'gpt-5.6-sol' --effort 'xhigh' -i" \
+    "copilot launch did not thread autonomy, model, effort, and initial instructions"
+  [ "$(cat "$canonical")" = '{"version":1,"hooks":{"sessionStart":[]}}' ] \
+    || fail "copilot spawn overwrote the tracked repository hook"
+  [ "$(cat "$occupied")" = '{"owned":"elsewhere"}' ] \
+    || fail "copilot spawn overwrote a pre-existing worker hook path"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id-2.json"
+  assert_present "$hook" "copilot spawn did not install its worker lifecycle hook"
+  python3 -m json.tool "$hook" >/dev/null || fail "copilot worker lifecycle hook is invalid JSON"
+  node - "$hook" <<'NODE' || fail "copilot worker lifecycle hook claims an unsupported non-Bash path"
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+for (const event of ["userPromptSubmitted", "agentStop", "sessionEnd"]) {
+  const entries = config.hooks[event];
+  if (!Array.isArray(entries) || entries.length !== 1) process.exit(1);
+  const entry = entries[0];
+  if (entry.type !== "command" || typeof entry.bash !== "string" || "powershell" in entry) process.exit(1);
+}
+NODE
+  [ "$(grep '^copilot_hook=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)" = ".github/hooks/fm-busy-state-$id-2.json" ] \
+    || fail "copilot spawn did not record its exact worker lifecycle hook"
+  hook_hash=$(grep '^copilot_hook_hash=' "$HOME_DIR/state/$id.meta" | tail -1 | cut -d= -f2-)
+  case "$hook_hash" in ''|*[!0-9a-f]*)
+    fail "copilot spawn did not record worker hook content ownership"
+    ;;
+  esac
+  [ "${#hook_hash}" -eq 64 ] \
+    || fail "copilot spawn recorded an invalid worker hook ownership hash"
+  grep -qxF 'copilot_hook_exclude_owned=1' "$HOME_DIR/state/$id.meta" \
+    || fail "copilot spawn did not record ownership of its ignore rule"
+  grep -qxF ".github/hooks/fm-busy-state-$id-1.json" "$exclude" \
+    || fail "copilot spawn removed a pre-existing shared ignore rule"
+  grep -qxF ".github/hooks/fm-busy-state-$id-2.json" "$exclude" \
+    || fail "copilot spawn did not hide its generated hook from git"
+  assert_grep "state=busy source=fm-spawn" "$HOME_DIR/state/$id.busy-state" \
+    "copilot spawn did not seed semantic busy state"
+  pass "copilot preserves existing hooks and installs a collision-safe worker lifecycle hook"
+}
+
+test_copilot_spawn_refuses_native_windows() {
+  local rec id out status
+  id=profile-copilot-native-windows
+  rec=$(make_spawn_case profile-copilot-native-windows copilot "$id")
+  read_case_record "$rec"
+  cat > "$FAKEBIN_DIR/uname" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' MINGW64_NT-10.0
+SH
+  chmod +x "$FAKEBIN_DIR/uname"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot worker spawn succeeded on native Windows"
+  assert_contains "$out" "Copilot workers are unsupported on native Windows" \
+    "copilot worker refusal did not explain the unsupported platform"
+  [ ! -s "$LAUNCH_LOG" ] || fail "copilot worker refusal still launched the harness"
+  assert_absent "$HOME_DIR/state/$id.meta" "copilot worker refusal published task metadata"
+  assert_absent "$WT_DIR/.github/hooks/fm-busy-state-$id.json" \
+    "copilot worker refusal installed lifecycle hooks"
+  assert_absent "$HOME_DIR/state/$id.busy-state" \
+    "copilot worker refusal armed semantic busy state"
+  pass "copilot worker launch refuses native Windows before lifecycle setup"
+}
+
+test_copilot_spawn_cleans_hook_when_metadata_publication_fails() {
+  local rec id out status hook exclude
+  id=profile-copilot-meta-fail
+  rec=$(make_spawn_case profile-copilot-meta-fail copilot "$id")
+  read_case_record "$rec"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+
+  out=$(FM_TEST_FAIL_COPILOT_META=1 \
+    FM_TEST_FAIL_COPILOT_META_PATH="$HOME_DIR/state/$id.meta" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn succeeded when metadata publication failed"
+  assert_absent "$hook" "failed copilot spawn left an unowned lifecycle hook active"
+  exclude=$(git -C "$WT_DIR" rev-parse --git-path info/exclude)
+  ! grep -qxF ".github/hooks/fm-busy-state-$id.json" "$exclude" \
+    || fail "failed copilot spawn left its owned ignore rule active"
+  pass "copilot spawn removes its hook when metadata publication fails"
+}
+
+test_copilot_spawn_refuses_symlinked_hook_parent() {
+  local rec id out status escaped
+  id=profile-copilot-symlink-github
+  rec=$(make_spawn_case profile-copilot-symlink-github copilot "$id")
+  read_case_record "$rec"
+  escaped="$CASE_DIR/escaped-github"
+  mkdir -p "$escaped"
+  ln -s "$escaped" "$WT_DIR/.github"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked hook parent"
+  assert_contains "$out" "refusing unsafe Copilot hook parent" \
+    "copilot spawn did not explain the unsafe hook parent"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked hook parent"
+
+  id=profile-copilot-symlink-hooks
+  rec=$(make_spawn_case profile-copilot-symlink-hooks copilot "$id")
+  read_case_record "$rec"
+  escaped="$CASE_DIR/escaped-hooks"
+  mkdir -p "$escaped" "$WT_DIR/.github"
+  ln -s "$escaped" "$WT_DIR/.github/hooks"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked hooks directory"
+  assert_contains "$out" "refusing unsafe Copilot hook parent" \
+    "copilot spawn did not explain the unsafe hooks directory"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked hooks directory"
+  pass "copilot spawn refuses symlinked hook parents"
+}
+
+test_copilot_spawn_refuses_symlinked_exclusion_paths() {
+  local rec id out status common info escaped hook
+  id=profile-copilot-symlink-info
+  rec=$(make_spawn_case profile-copilot-symlink-info copilot "$id")
+  read_case_record "$rec"
+  common=$(git -C "$WT_DIR" rev-parse --git-common-dir)
+  info="$common/info"
+  escaped="$CASE_DIR/escaped-info"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  mkdir -p "$escaped"
+  rm -rf "$info"
+  ln -s "$escaped" "$info"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked exclusion parent"
+  assert_contains "$out" "unsafe Copilot worker hook exclusion parent" \
+    "copilot spawn did not explain the unsafe exclusion parent"
+  assert_absent "$hook" "copilot spawn created a hook before validating its exclusion parent"
+  [ -z "$(find "$escaped" -mindepth 1 -print -quit)" ] \
+    || fail "copilot spawn wrote through a symlinked exclusion parent"
+
+  id=profile-copilot-symlink-exclude
+  rec=$(make_spawn_case profile-copilot-symlink-exclude copilot "$id")
+  read_case_record "$rec"
+  common=$(git -C "$WT_DIR" rev-parse --git-common-dir)
+  info="$common/info"
+  escaped="$CASE_DIR/escaped-exclude"
+  hook="$WT_DIR/.github/hooks/fm-busy-state-$id.json"
+  mkdir -p "$info"
+  printf 'repository-owned\n' > "$escaped"
+  rm -f "$info/exclude"
+  ln -s "$escaped" "$info/exclude"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "copilot spawn accepted a symlinked exclusion file"
+  assert_contains "$out" "unsafe Copilot worker hook exclusion path" \
+    "copilot spawn did not explain the unsafe exclusion file"
+  assert_absent "$hook" "copilot spawn created a hook before validating its exclusion file"
+  [ "$(cat "$escaped")" = repository-owned ] \
+    || fail "copilot spawn wrote through a symlinked exclusion file"
+  pass "copilot spawn validates exclusion containment before hook creation"
+}
+
 test_grok_threads_model_and_reasoning_effort() {
   local rec id out status launch
   id=profile-grok-z5
@@ -686,6 +896,11 @@ test_active_dispatch_profile_allows_raw_launch_command
 test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort
+test_copilot_threads_model_effort_and_worker_hook
+test_copilot_spawn_refuses_native_windows
+test_copilot_spawn_cleans_hook_when_metadata_publication_fails
+test_copilot_spawn_refuses_symlinked_hook_parent
+test_copilot_spawn_refuses_symlinked_exclusion_paths
 test_grok_threads_model_and_reasoning_effort
 test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort

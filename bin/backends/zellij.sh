@@ -48,8 +48,9 @@
 #   2. Key names: Enter -> "Enter", Escape -> "Esc" (NOT "Escape"), Ctrl-C ->
 #      "Ctrl c" as ONE shell argument with an embedded space (NOT two argv
 #      words, NOT "C-c" or "Ctrl+c" - all verified to fail).
-#   3. `new-tab --cwd --name` DOES return the created tab's bare integer id on
-#      stdout, exactly as documented.
+#   3. `new-tab --cwd --name` returns the created tab's bare integer id on
+#      stdout on Unix, but the native Windows client can succeed silently.
+#      The create path resolves that case from the unique live tab title.
 #   4. `list-panes --json`'s `pane_cwd` reflects a `cd` run DIRECTLY in the
 #      pane's own top-level shell within one poll (<0.3s) - but does NOT
 #      reflect a `cd` performed by a NESTED SUBSHELL the pane's shell
@@ -216,7 +217,8 @@ fm_backend_zellij_cli() {  # <session> <action-subcommand-and-args...>
 # orphan whatever the caller actually meant to reach). Every op below calls
 # this first and fails rather than guessing.
 fm_backend_zellij_session_exists() {  # <session>
-  zellij list-sessions --short --no-formatting 2>/dev/null | grep -qxF "$1"
+  zellij list-sessions --no-formatting 2>/dev/null \
+    | awk -v want="$1" '$1 == want && index($0, "(EXITED") == 0 { found = 1 } END { exit found ? 0 : 1 }'
 }
 
 # fm_backend_zellij_server_ensure: create the named session in the background,
@@ -225,15 +227,24 @@ fm_backend_zellij_session_exists() {  # <session>
 # Verified: `zellij attach -b <name>` with stdin redirected from /dev/null and
 # no controlling TTY creates the session and returns promptly (it cannot
 # actually attach without a TTY, so it exits after creating); running it again
-# against an EXISTING session prints "Session already exists" and exits 1 -
-# harmless here because existence is checked first and the launch is
-# backgrounded, its exit status never inspected.
+# against an EXISTING session prints "Session already exists" and exits 1.
+# Keep creation in the foreground until the command has handed the session off
+# to its server, and tolerate another creator winning between the two calls.
 fm_backend_zellij_server_ensure() {  # <session>
   local session=$1 i
   fm_backend_zellij_session_exists "$session" && return 0
-  ( nohup zellij attach -b "$session" </dev/null >/dev/null 2>&1 & ) || return 1
+  if ! zellij attach -b "$session" </dev/null >/dev/null 2>&1; then
+    fm_backend_zellij_session_exists "$session" || return 1
+  fi
   for i in $(seq 1 20); do
-    fm_backend_zellij_session_exists "$session" && return 0
+    if fm_backend_zellij_session_exists "$session"; then
+      sleep 1
+      if fm_backend_zellij_session_exists "$session"; then
+        return 0
+      fi
+      echo "error: zellij session '$session' was created but its server exited" >&2
+      return 1
+    fi
     sleep 0.5
   done
   echo "error: zellij session '$session' did not come up within 10s" >&2
@@ -337,6 +348,11 @@ fm_backend_zellij_create_task() {  # <session> <label> <cwd>
   fi
   prev_active=$(printf '%s' "$tabs" | jq -r '.[]? | select(.active == true) | .tab_id' 2>/dev/null | head -1)
   tab_id=$(fm_backend_zellij_cli "$session" action new-tab --cwd "$cwd" --name "$title" 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$tab_id" ]; then
+    tabs=$(fm_backend_zellij_cli "$session" action list-tabs --json 2>/dev/null)
+    tab_id=$(printf '%s' "$tabs" | jq -r --arg want "$title" \
+      '[.[]? | select(.name == $want)] | if length == 1 then .[0].tab_id else empty end' 2>/dev/null)
+  fi
   case "$tab_id" in
     ''|*[!0-9]*)
       echo "error: zellij new-tab did not return a numeric tab id for '$title' (got '$tab_id'; session '$session' may not exist)" >&2

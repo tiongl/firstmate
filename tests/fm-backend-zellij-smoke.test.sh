@@ -53,18 +53,20 @@ fm_backend_zellij_version_check || fail "version_check failed against the real i
 pass "real zellij: version_check accepts the installed binary's version"
 
 CONTAINER=$(fm_backend_zellij_container_ensure) || fail "container_ensure failed"
+[ -n "$CONTAINER" ] || fail "container_ensure returned no session name"
 [ "$CONTAINER" = "$SESSION" ] || fail "container_ensure should echo the isolated session name, got '$CONTAINER'"
 pass "real zellij: container_ensure starts the isolated background session ($CONTAINER)"
 
 # A second container_ensure must reuse the same session (idempotent, no error).
 CONTAINER2=$(fm_backend_zellij_container_ensure) || fail "second container_ensure failed"
+[ -n "$CONTAINER2" ] || fail "second container_ensure returned no session name"
 [ "$CONTAINER2" = "$CONTAINER" ] || fail "container_ensure is not idempotent: '$CONTAINER' vs '$CONTAINER2'"
 pass "real zellij: container_ensure is idempotent (reuses the existing session)"
 
 # --- create_task + duplicate refusal -----------------------------------------
 
 LABEL="fm-smoke1"
-TASK_IDS=$(fm_backend_zellij_create_task "$SESSION" "$LABEL" /tmp) || fail "create_task failed"
+TASK_IDS=$(fm_backend_zellij_create_task "$SESSION" "$LABEL" "$TMP_CWD") || fail "create_task failed"
 read -r TAB_ID PANE_ID <<EOF
 $TASK_IDS
 EOF
@@ -73,7 +75,7 @@ if [ -z "$TAB_ID" ] || [ -z "$PANE_ID" ]; then
 fi
 TARGET="$SESSION:$PANE_ID"
 
-if fm_backend_zellij_create_task "$SESSION" "$LABEL" /tmp >/dev/null 2>&1; then
+if fm_backend_zellij_create_task "$SESSION" "$LABEL" "$TMP_CWD" >/dev/null 2>&1; then
   fail "create_task should refuse a duplicate tab name (zellij itself does not enforce uniqueness)"
 fi
 pass "real zellij: create_task creates a tab/pane and refuses a duplicate name"
@@ -125,13 +127,11 @@ pass "real zellij: capture supports viewport-sized reads and larger full-scrollb
 
 # --- current_path -------------------------------------------------------------
 
-fm_backend_zellij_send_text_line "$TARGET" "cd /tmp"
+fm_backend_zellij_send_text_line "$TARGET" "cd $TMP_CWD_Q"
 sleep 0.3
 p=$(fm_backend_zellij_current_path "$TARGET") || fail "current_path failed"
-case "$p" in
-  */tmp) : ;;
-  *) fail "real zellij: current_path did not report the pane's cwd after cd /tmp, got '$p'" ;;
-esac
+[ "$p" = "$TMP_CWD" ] \
+  || fail "real zellij: current_path did not report the pane's temporary cwd, got '$p'"
 pass "real zellij: current_path reads the pane's live cwd after a direct cd"
 
 fm_backend_zellij_send_text_line "$TARGET" "cd $LONG_CWD_Q"
@@ -190,7 +190,7 @@ pass "real zellij: kill removes the pane+tab and is idempotent/best-effort"
 # --- list_live (name-based recovery discovery) --------------------------------
 
 LABEL2="fm-smoke2"
-TASK_IDS2=$(fm_backend_zellij_create_task "$SESSION" "$LABEL2" /tmp) || fail "second create_task failed"
+TASK_IDS2=$(fm_backend_zellij_create_task "$SESSION" "$LABEL2" "$TMP_CWD") || fail "second create_task failed"
 read -r _TAB_ID2 PANE_ID2 <<EOF
 $TASK_IDS2
 EOF

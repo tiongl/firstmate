@@ -65,6 +65,14 @@ export REAL_PS_FOR_TEST
 REAL_LSOF_FOR_TEST=$(command -v lsof)
 export REAL_LSOF_FOR_TEST
 
+test_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
 # Build a fresh sandbox for one test case. Sets up:
 #   $CASE/state/        - firstmate state dir (with a fresh watcher beacon)
 #   $CASE/fakebin/      - mocks for treehouse, tmux (PATH-prepended by caller)
@@ -1326,6 +1334,201 @@ test_teardown_missing_busy_sidecar_completes() {
   pass "teardown completes when an exact busy-state sidecar is already absent"
 }
 
+test_teardown_removes_only_recorded_copilot_hook() {
+  local case_dir hook repository_hook hash exclude
+  case_dir=$(make_case copilot-hook-cleanup)
+  write_meta "$case_dir" local-only ship
+  hook="$case_dir/wt/.github/hooks/fm-busy-state-task-x1-1.json"
+  repository_hook="$case_dir/wt/.github/hooks/fm-busy-state.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  hash=$(test_sha256 "$hook")
+  printf '%s\n' '{"repository":"owned"}' > "$repository_hook"
+  exclude=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+  printf '%s\n' '.github/hooks/fm-busy-state-task-x1-1.json' >> "$exclude"
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1-1.json' \
+    "copilot_hook_hash=$hash" \
+    'copilot_hook_exclude_owned=1' \
+    >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" --force >/dev/null
+
+  assert_absent "$hook" "teardown left the recorded Copilot worker hook active"
+  assert_present "$repository_hook" "teardown removed a repository-owned Copilot hook"
+  [ "$(cat "$repository_hook")" = '{"repository":"owned"}' ] \
+    || fail "teardown changed a repository-owned Copilot hook"
+  ! grep -qxF '.github/hooks/fm-busy-state-task-x1-1.json' "$exclude" \
+    || fail "teardown left the worker-owned ignore rule active"
+  pass "teardown removes only the exact recorded Copilot worker hook"
+}
+
+test_teardown_preserves_preexisting_copilot_exclusion() {
+  local case_dir hook hash exclude
+  case_dir=$(make_case copilot-hook-preexisting-exclusion)
+  write_meta "$case_dir" local-only ship
+  hook="$case_dir/wt/.github/hooks/fm-busy-state-task-x1.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  hash=$(test_sha256 "$hook")
+  exclude=$(git -C "$case_dir/wt" rev-parse --git-path info/exclude)
+  printf '%s\n' '.github/hooks/fm-busy-state-task-x1.json' >> "$exclude"
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    "copilot_hook_hash=$hash" >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" --force >/dev/null
+
+  assert_absent "$hook" "teardown left the recorded Copilot worker hook active"
+  grep -qxF '.github/hooks/fm-busy-state-task-x1.json' "$exclude" \
+    || fail "teardown removed a pre-existing repository ignore rule"
+  pass "teardown preserves pre-existing Copilot hook exclusions"
+}
+
+test_teardown_removes_copilot_exclusion_after_worktree_return() {
+  local case_dir exclude
+  case_dir=$(make_case copilot-exclusion-after-worktree-return)
+  write_meta "$case_dir" local-only ship
+  exclude="$(git -C "$case_dir/project" rev-parse --absolute-git-dir)/info/exclude"
+  printf '%s\n' '.github/hooks/fm-busy-state-task-x1.json' >> "$exclude"
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    'copilot_hook_hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    'copilot_hook_exclude_owned=1' >> "$case_dir/state/task-x1.meta"
+  git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
+
+  run_teardown "$case_dir" --force >/dev/null
+
+  ! grep -qxF '.github/hooks/fm-busy-state-task-x1.json' "$exclude" \
+    || fail "teardown left the worker-owned ignore rule after worktree return"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "teardown retained task metadata after retiring the orphaned ignore rule"
+  pass "teardown retires Copilot exclusions after the worker worktree is gone"
+}
+
+test_teardown_preserves_copilot_hook_whose_ownership_changed() {
+  local case_dir hook hash rc=0
+  case_dir=$(make_case copilot-hook-ownership-changed)
+  write_meta "$case_dir" local-only ship
+  hook="$case_dir/wt/.github/hooks/fm-busy-state-task-x1.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  hash=$(test_sha256 "$hook")
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    "copilot_hook_hash=$hash" >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' '{"repository":"replacement"}' > "$hook"
+
+  run_teardown "$case_dir" --force >"$case_dir/stdout" 2>"$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "teardown removed a Copilot hook whose contents changed"
+  assert_present "$hook" "teardown deleted replacement Copilot hook content"
+  assert_present "$case_dir/state/task-x1.meta" "ownership refusal erased task metadata"
+  assert_grep "Copilot worker hook ownership changed" "$case_dir/stderr" \
+    "changed Copilot hook ownership refusal was not actionable"
+  pass "teardown preserves a Copilot hook whose content ownership changed"
+}
+
+test_teardown_preserves_copilot_hook_that_became_tracked() {
+  local case_dir hook hash rc=0
+  case_dir=$(make_case copilot-hook-became-tracked)
+  write_meta "$case_dir" local-only ship
+  hook="$case_dir/wt/.github/hooks/fm-busy-state-task-x1.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  hash=$(test_sha256 "$hook")
+  printf '%s\n' \
+    'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    "copilot_hook_hash=$hash" >> "$case_dir/state/task-x1.meta"
+  git -C "$case_dir/wt" add .github/hooks/fm-busy-state-task-x1.json
+  git -C "$case_dir/wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm 'adopt worker hook'
+
+  run_teardown "$case_dir" --force >"$case_dir/stdout" 2>"$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "teardown removed a Copilot hook that became tracked"
+  assert_present "$hook" "teardown deleted tracked Copilot hook content"
+  git -C "$case_dir/wt" diff --quiet -- .github/hooks/fm-busy-state-task-x1.json \
+    || fail "teardown left a tracked Copilot hook deletion"
+  assert_grep "is now tracked" "$case_dir/stderr" \
+    "tracked Copilot hook ownership refusal was not actionable"
+  pass "teardown preserves Copilot hooks adopted by the repository"
+}
+
+test_teardown_refuses_unsafe_copilot_hook_path() {
+  local case_dir repository_hook rc=0
+  case_dir=$(make_case copilot-hook-unsafe)
+  write_meta "$case_dir" local-only ship
+  repository_hook="$case_dir/wt/.github/hooks/firstmate.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"repository":"owned"}' > "$repository_hook"
+  printf '%s\n' 'copilot_hook=.github/hooks/firstmate.json' \
+    >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" --force >"$case_dir/stdout" 2>"$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "teardown accepted an unsafe recorded Copilot hook path"
+  assert_present "$repository_hook" "unsafe hook metadata removed a repository-owned hook"
+  assert_present "$case_dir/state/task-x1.meta" "unsafe hook metadata erased task ownership"
+  assert_grep "unsafe Copilot worker hook path" "$case_dir/stderr" \
+    "unsafe hook metadata refusal was not actionable"
+  pass "teardown refuses unsafe Copilot hook metadata without changing ownership"
+}
+
+test_teardown_refuses_symlinked_copilot_hook_parent() {
+  local case_dir escaped hook rc=0
+  case_dir=$(make_case copilot-hook-symlink-parent)
+  write_meta "$case_dir" local-only ship
+  escaped="$case_dir/escaped-hooks"
+  hook="$escaped/fm-busy-state-task-x1.json"
+  mkdir -p "$escaped" "$case_dir/wt/.github"
+  printf '%s\n' '{"worker":"task-x1"}' > "$hook"
+  ln -s "$escaped" "$case_dir/wt/.github/hooks"
+  printf '%s\n' 'copilot_hook=.github/hooks/fm-busy-state-task-x1.json' \
+    >> "$case_dir/state/task-x1.meta"
+
+  run_teardown "$case_dir" --force >"$case_dir/stdout" 2>"$case_dir/stderr" || rc=$?
+
+  [ "$rc" -ne 0 ] || fail "teardown accepted a symlinked Copilot hook parent"
+  assert_present "$hook" "teardown deleted a hook through a symlinked parent"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "symlinked hook parent refusal erased task ownership"
+  assert_grep "unsafe Copilot worker hook parent" "$case_dir/stderr" \
+    "symlinked hook parent refusal was not actionable"
+  pass "teardown refuses symlinked Copilot hook parents"
+}
+
+test_forced_secondmate_cleanup_removes_child_copilot_hook() {
+  local case_dir home hook hash
+  case_dir=$(make_case copilot-child-hook-cleanup)
+  write_meta "$case_dir" local-only secondmate
+  home="$case_dir/secondmate-home"
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
+  printf '%s\n' task-x1 > "$home/.fm-secondmate-home"
+  printf '%s\n' "home=$home" >> "$case_dir/state/task-x1.meta"
+  hook="$case_dir/wt/.github/hooks/fm-busy-state-child-copilot.json"
+  mkdir -p "$case_dir/wt/.github/hooks"
+  printf '%s\n' '{"worker":"child-copilot"}' > "$hook"
+  hash=$(test_sha256 "$hook")
+  fm_write_meta "$home/state/child-copilot.meta" \
+    "window=firstmate:fm-child-copilot" \
+    "endpoint_task_id=child-copilot" \
+    "worktree=$case_dir/wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=local-only" \
+    "copilot_hook=.github/hooks/fm-busy-state-child-copilot.json" \
+    "copilot_hook_hash=$hash"
+  : > "$home/state/child-copilot.status"
+  : > "$home/state/child-copilot.turn-ended"
+
+  run_teardown "$case_dir" --force >/dev/null
+
+  assert_absent "$hook" "forced secondmate cleanup left a child Copilot hook active"
+  assert_absent "$home" "forced secondmate cleanup did not retire the child home"
+  pass "forced secondmate cleanup removes recorded child Copilot hooks"
+}
+
 test_herdr_teardown_clears_escalation_marker() {
   local case_dir marker
   case_dir=$(make_case herdr-marker-cleanup)
@@ -2507,6 +2710,14 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
+test_teardown_removes_only_recorded_copilot_hook
+test_teardown_preserves_preexisting_copilot_exclusion
+test_teardown_removes_copilot_exclusion_after_worktree_return
+test_teardown_preserves_copilot_hook_whose_ownership_changed
+test_teardown_preserves_copilot_hook_that_became_tracked
+test_teardown_refuses_unsafe_copilot_hook_path
+test_teardown_refuses_symlinked_copilot_hook_parent
+test_forced_secondmate_cleanup_removes_child_copilot_hook
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
